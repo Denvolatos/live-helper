@@ -30,3 +30,10 @@ Windows 小工具：搜索虎牙 / 斗鱼 / B 站主播，选中后用 **PotPlay
 
 ## 🧱 依赖
 streamlink（BSD-2-Clause）、customtkinter（MIT）、requests、Pillow、websocket-client、brotli、psutil、PyInstaller、Inno Setup。PotPlayer 不随软件分发。
+
+## 📄 许可证
+本项目使用 **GNU AGPL-3.0** 许可证，详见 `LICENSE`。Copyright (C) 2026 Denvolatos。
+
+- 可以自由使用、修改、分发；分发（或把修改版作为网络服务提供）时，必须同样以 AGPL-3.0 公开对应源码。
+- 与各直播平台、PotPlayer 均无关联；PotPlayer 不随本软件分发。
+- 设计上参考过开源项目「纯粹直播 Pure Live」（AGPL-3.0）的整体风格思路，**未复制其代码或图片素材**。
