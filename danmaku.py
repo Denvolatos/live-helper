@@ -10,8 +10,10 @@
 
 所有平台协议都是逆向接口，会失效；验证日期见 工作日志/直播助手-日志.md。
 """
+import collections
 import ctypes
 import json
+import math
 import os
 import queue
 import random
@@ -32,7 +34,9 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 SUPPORTED = {"douyu": True, "huya": True, "bili": True}
 AREAS = ["全屏", "上半屏", "上三分之一"]
 AREA_FRAC = {"全屏": 1.0, "上半屏": 0.5, "上三分之一": 1 / 3.0}
-DEFAULTS = dict(danmaku_on=False, dm_font=28, dm_alpha=0.9, dm_speed=8, dm_area="上半屏")
+RENDERERS = ["平滑（新）", "兼容（旧）"]   # 平滑=分层窗口自绘；兼容=Tk 画布（v1.1.0 的做法，作为回退）
+DEFAULTS = dict(danmaku_on=False, dm_font=28, dm_alpha=0.9, dm_speed=8, dm_area="上半屏", dm_max=80,
+                dm_renderer="平滑（新）")
 
 
 # ====================================================================== 客户端基类
@@ -671,6 +675,11 @@ class Overlay:
         self.win.after(33, self._tick)
 
     # ---- 外部接口
+    kind = "tk"
+
+    def geometry(self):
+        return self.win.winfo_geometry()
+
     def push(self, text):
         """线程安全：队列满就丢弃（限速防卡顿）。"""
         try:
@@ -686,7 +695,9 @@ class Overlay:
         x, y, w, h = rect
         w, h = max(w, 50), max(h, 50)
         self.W, self.H = w, h
-        self.win.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        if (x, y, w, h) != getattr(self, "_last_rect", None):   # 没变就别重设，省得无谓重排
+            self._last_rect = (x, y, w, h)
+            self.win.geometry("%dx%d+%d+%d" % (w, h, x, y))
         if not self.visible:
             self.win.deiconify()
             self.visible = True
@@ -789,7 +800,7 @@ class Overlay:
                     self.lane_tail[lane] -= dx
                 # 每帧最多发 3 条；屏幕上太多就先等
                 n = 0
-                while n < 3 and len(self.items) < self.MAX_ON_SCREEN:
+                while n < 3 and len(self.items) < int(self.s.get("dm_max", self.MAX_ON_SCREEN)):
                     try:
                         text = self.q.get_nowait()
                     except queue.Empty:
@@ -815,6 +826,499 @@ class Overlay:
         except Exception:
             pass
         self.win.after(33, self._tick)
+
+
+# ====================================================================== 分层窗口悬浮层（v1.1.1 起默认）
+# 为什么换：Tk Canvas + -transparentcolor 抠色 + -alpha 的窗口，重绘走 GDI，不和显示器刷新同步，
+# 抗锯齿边缘又被色键硬切；改为自绘 Win32 分层窗口 + UpdateLayeredWindow（每像素 alpha，预乘 BGRA），
+# 在独立线程里按显示器刷新（DwmFlush）逐帧合成，文字是 Pillow 预渲染的 RGBA 图（描边 + 白字）。
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _SIZE(ctypes.Structure):
+    _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+
+class _BLEND(ctypes.Structure):
+    _fields_ = [("BlendOp", ctypes.c_ubyte), ("BlendFlags", ctypes.c_ubyte),
+                ("SourceConstantAlpha", ctypes.c_ubyte), ("AlphaFormat", ctypes.c_ubyte)]
+
+
+class _BMIH(ctypes.Structure):
+    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long), ("biHeight", ctypes.c_long),
+                ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", ctypes.c_long),
+                ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", wintypes.DWORD),
+                ("biClrImportant", wintypes.DWORD)]
+
+
+_WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t)
+
+
+class _WNDCLASSW(ctypes.Structure):
+    _fields_ = [("style", ctypes.c_uint), ("lpfnWndProc", _WNDPROC), ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int), ("hInstance", ctypes.c_void_p), ("hIcon", ctypes.c_void_p),
+                ("hCursor", ctypes.c_void_p), ("hbrBackground", ctypes.c_void_p),
+                ("lpszMenuName", wintypes.LPCWSTR), ("lpszClassName", wintypes.LPCWSTR)]
+
+
+gdi32 = ctypes.windll.gdi32
+try:
+    dwmapi = ctypes.windll.dwmapi
+except Exception:  # pragma: no cover
+    dwmapi = None
+winmm = ctypes.windll.winmm
+_VP = ctypes.c_void_p
+kernel32.GetModuleHandleW.restype = _VP
+kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+user32.DefWindowProcW.restype = ctypes.c_ssize_t
+user32.DefWindowProcW.argtypes = [_VP, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+user32.RegisterClassW.argtypes = [ctypes.POINTER(_WNDCLASSW)]
+user32.CreateWindowExW.restype = _VP
+user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int,
+                                   ctypes.c_int, ctypes.c_int, ctypes.c_int, _VP, _VP, _VP, _VP]
+user32.DestroyWindow.argtypes = [_VP]
+user32.ShowWindow.argtypes = [_VP, ctypes.c_int]
+user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, _VP]
+user32.GetDC.restype = _VP
+user32.GetDC.argtypes = [_VP]
+user32.ReleaseDC.argtypes = [_VP, _VP]
+user32.UpdateLayeredWindow.argtypes = [_VP, _VP, ctypes.POINTER(_POINT), ctypes.POINTER(_SIZE), _VP,
+                                       ctypes.POINTER(_POINT), wintypes.DWORD, ctypes.POINTER(_BLEND), wintypes.DWORD]
+user32.PeekMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), _VP, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
+user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+gdi32.CreateCompatibleDC.restype = _VP
+gdi32.CreateCompatibleDC.argtypes = [_VP]
+gdi32.CreateDIBSection.restype = _VP
+gdi32.CreateDIBSection.argtypes = [_VP, ctypes.POINTER(_BMIH), ctypes.c_uint, ctypes.POINTER(_VP), _VP, wintypes.DWORD]
+gdi32.SelectObject.restype = _VP
+gdi32.SelectObject.argtypes = [_VP, _VP]
+gdi32.DeleteObject.argtypes = [_VP]
+gdi32.DeleteDC.argtypes = [_VP]
+gdi32.GetDeviceCaps.argtypes = [_VP, ctypes.c_int]
+_ULW_ALPHA = 2
+_SW_HIDE, _SW_SHOWNOACTIVATE = 0, 4
+_CLEAR = (0, 0, 0, 0)
+
+
+def _find_cjk_font():
+    win = os.environ.get("WINDIR", r"C:\Windows")
+    for n in ("msyhbd.ttc", "msyh.ttc", "simhei.ttf"):
+        p = os.path.join(win, "Fonts", n)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+# 微软雅黑没有 emoji 字形，直接去掉（会画成方框）；顺便去掉零宽/控制字符
+_ASTRAL = re.compile("[\U00010000-\U0010ffff\ufe0e\ufe0f\u200b-\u200f\u2028-\u202e\u2060]")
+
+
+class LayeredOverlay:
+    """每像素 alpha 的分层窗口悬浮层。窗口和渲染都在自己的线程里（不占 tk 主线程），
+    帧节奏对齐显示器刷新（DwmFlush）。对外接口和 Overlay 相同。"""
+
+    kind = "layered"
+    MAX_PENDING = 150
+
+    def __init__(self, tk_root, settings):
+        from PIL import Image, ImageDraw, ImageFont
+        self._Image, self._Draw, self._Font = Image, ImageDraw, ImageFont
+        self.s = settings
+        self._font_path = _find_cjk_font()
+        if not self._font_path:
+            raise RuntimeError("找不到中文字体")
+        self.q = queue.Queue(maxsize=self.MAX_PENDING)
+        self._lock = threading.Lock()
+        self._want = dict(rect=None, above=None, topmost=False, visible=False, seq=0)
+        self._items = []
+        self._stop = threading.Event()
+        self._clear_flag = False
+        self._ready = threading.Event()
+        self._err = None
+        self.dropped = 0
+        self.errors = 0
+        self._work_ms = 0.0
+        self.frame_log = collections.deque(maxlen=8000)   # (vsync 时刻, 本帧合成耗时 ms)
+        self.trace_on = False
+        self.trace = []            # 诊断用：[(时刻, 第一条弹幕的精确 x, 取整后的 x)]
+        self.freeze = False        # 诊断用：冻结动画
+        self.refresh = 60
+        self._geo = "0x0+0+0"
+        self._font_dirty = True
+        self.line_h = int(int(self.s["dm_font"]) * 1.35)
+        self._cache = collections.OrderedDict()
+        self.thread = threading.Thread(target=self._run, daemon=True, name="dm-render")
+        self.thread.start()
+        self._ready.wait(5)
+        if self._err is not None or not self._ready.is_set():
+            raise RuntimeError("分层窗口初始化失败：%r" % (self._err,))
+
+    # ---- 外部接口（任意线程）
+    @property
+    def visible(self):
+        return self._want["visible"]
+
+    @property
+    def items(self):
+        return self._items
+
+    def geometry(self):
+        return self._geo
+
+    def push(self, text):
+        try:
+            self.q.put_nowait(text)
+        except queue.Full:
+            self.dropped += 1
+
+    def apply_settings(self):
+        self._font_dirty = True
+
+    def show(self, rect, above_hwnd=None, topmost=False):
+        with self._lock:
+            w = self._want
+            r = tuple(int(v) for v in rect)
+            if (w["rect"], w["above"], w["topmost"], w["visible"]) != (r, above_hwnd, bool(topmost), True):
+                w.update(rect=r, above=above_hwnd, topmost=bool(topmost), visible=True, seq=w["seq"] + 1)
+
+    def hide(self):
+        with self._lock:
+            self._want["visible"] = False
+
+    def clear(self):
+        self._clear_flag = True
+        while True:
+            try:
+                self.q.get_nowait()
+            except queue.Empty:
+                break
+
+    def destroy(self):
+        self._stop.set()
+        if self.thread.is_alive() and threading.current_thread() is not self.thread:
+            self.thread.join(2)
+
+    # ---- 渲染线程
+    def _run(self):
+        try:
+            self._setup()
+        except Exception as e:
+            self._err = e
+            self._ready.set()
+            return
+        winmm.timeBeginPeriod(1)
+        self._ready.set()
+        try:
+            self._loop()
+        finally:
+            winmm.timeEndPeriod(1)
+            self._teardown()
+
+    def _setup(self):
+        self._cls = "LiveHelperDM%d_%d" % (os.getpid(), id(self) & 0xffff)
+
+        def wp(h, m, w, l):
+            return user32.DefWindowProcW(h, m, w, l)
+        self._wp = _WNDPROC(wp)
+        wc = _WNDCLASSW()
+        wc.lpfnWndProc = self._wp
+        wc.hInstance = kernel32.GetModuleHandleW(None)
+        wc.lpszClassName = self._cls
+        if not user32.RegisterClassW(ctypes.byref(wc)):
+            raise ctypes.WinError()
+        ex = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST
+        self.hwnd = user32.CreateWindowExW(ex, self._cls, "", 0x80000000, 0, 0, 10, 10, None, None, wc.hInstance, None)
+        if not self.hwnd:
+            raise ctypes.WinError()
+        self._hdc_scr = user32.GetDC(None)
+        self._memdc = gdi32.CreateCompatibleDC(self._hdc_scr)
+        try:
+            self.refresh = int(gdi32.GetDeviceCaps(self._hdc_scr, 116)) or 60   # VREFRESH
+            if self.refresh < 24:
+                self.refresh = 60
+        except Exception:
+            self.refresh = 60
+        self._div = 1 if self.refresh <= 165 else int(math.ceil(self.refresh / 120.0))
+        self._bmp = None
+        self._canvas = None
+        self._cw = self._ch = 0
+        self._shown = False
+        self._topmost = None
+        self._seq = -1
+        self._lane_last = {}
+        self._last_lane = -1
+        self._held = None
+        self._clock = 0.0
+        self._alloc(64, 64)
+
+    def _teardown(self):
+        for fn in (lambda: user32.DestroyWindow(self.hwnd),
+                   lambda: gdi32.DeleteDC(self._memdc),
+                   lambda: gdi32.DeleteObject(self._bmp) if self._bmp else None,
+                   lambda: user32.ReleaseDC(None, self._hdc_scr),
+                   lambda: user32.UnregisterClassW(self._cls, kernel32.GetModuleHandleW(None))):
+            try:
+                fn()
+            except Exception:
+                pass
+
+    def _alloc(self, w, h):
+        old = self._bmp
+        bmi = _BMIH()
+        bmi.biSize, bmi.biWidth, bmi.biHeight = ctypes.sizeof(_BMIH), w, -h
+        bmi.biPlanes, bmi.biBitCount = 1, 32
+        bits = _VP()
+        bmp = gdi32.CreateDIBSection(self._hdc_scr, ctypes.byref(bmi), 0, ctypes.byref(bits), None, 0)
+        if not bmp or not bits.value:
+            raise ctypes.WinError()
+        gdi32.SelectObject(self._memdc, bmp)
+        if old:
+            gdi32.DeleteObject(old)
+        self._bmp = bmp
+        self._buf = (ctypes.c_char * (w * h * 4)).from_address(bits.value)   # 直接指向 DIB 内存
+        im = self._Image.frombuffer("RGBA", (w, h), self._buf, "raw", "RGBA", 0, 1)
+        im.readonly = 0   # 让 paste 就地写入 DIB 内存（不拷贝）
+        im.paste(_CLEAR, (0, 0, w, h))
+        self._canvas = im
+        self._cw, self._ch = w, h
+        for it in self._items:
+            it["box"] = None
+
+    # ---- 字体/精灵
+    def _rebuild_font(self):
+        size = int(self.s["dm_font"])
+        self._pil_font = self._Font.truetype(self._font_path, size)
+        self._stroke = max(1, int(round(size / 14.0)))
+        self.line_h = int(size * 1.35)
+        self._notdef = bytes(self._pil_font.getmask("￿"))
+        self._has = {}
+        self._cache.clear()
+        self._font_dirty = False
+
+    def _clean(self, text):
+        """去掉字体里没有的字（emoji、符号等，会画成方框）。结果按字缓存。"""
+        out = []
+        nd = self._notdef
+        for ch in text:
+            if ord(ch) < 0x2e80:                      # 拉丁/标点/符号区才需要查；CJK 主区基本都有
+                ok = self._has.get(ch)
+                if ok is None:
+                    ok = self._has[ch] = (ch.isspace() or bytes(self._pil_font.getmask(ch)) != nd)
+                if not ok:
+                    continue
+            out.append(ch)
+        return "".join(out)
+
+    def _sprite(self, text):
+        c = self._cache
+        sp = c.get(text)
+        if sp is not None:
+            c.move_to_end(text)
+            return sp
+        font, sw = self._pil_font, self._stroke
+        l, t, r, b = font.getbbox(text, stroke_width=sw)
+        wpx, hpx = max(r, 1) + 2 * sw + 4, max(b, 1) + 2 * sw + 4
+        img = self._Image.new("RGBA", (wpx, hpx), _CLEAR)
+        self._Draw.Draw(img).text((sw + 1, sw + 1), text, font=font, fill=(255, 255, 255, 255),
+                                  stroke_width=sw, stroke_fill=(0, 0, 0, 255))
+        bb = img.getbbox()
+        if not bb:
+            return None
+        img = img.crop(bb)
+        pm = img.convert("RGBa")   # 预乘 alpha；字色只有黑白（R=G=B），所以 RGB/BGR 顺序无所谓
+        spr = self._Image.frombytes("RGBA", pm.size, pm.tobytes())
+        sp = (spr, bb[0], bb[1], pm.size[0], pm.size[1])
+        c[text] = sp
+        if len(c) > 300:
+            c.popitem(last=False)
+        return sp
+
+    # ---- 窗口
+    def _zorder(self, above_hwnd, topmost):
+        flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+        if topmost or above_hwnd is None:
+            if self._topmost is not True:
+                user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+                self._topmost = True
+            return
+        if self._topmost is not False:
+            user32.SetWindowPos(self.hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+            self._topmost = False
+        prev = user32.GetWindow(above_hwnd, GW_HWNDPREV)
+        if prev == self.hwnd:
+            return
+        user32.SetWindowPos(self.hwnd, prev if prev else HWND_TOP, 0, 0, 0, 0, flags)
+
+    def _pump(self):
+        msg = wintypes.MSG()
+        while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+    # ---- 主循环
+    def _loop(self):
+        pc = time.perf_counter
+        last_t = pc()
+        while not self._stop.is_set():
+            try:
+                self._pump()
+                if self._font_dirty:
+                    self._rebuild_font()
+                if self._clear_flag:
+                    self._clear_flag = False
+                    self._items = []
+                    self._lane_last.clear()
+                    self._held = None
+                    self._canvas.paste(_CLEAR, (0, 0, self._cw, self._ch))
+                with self._lock:
+                    want = dict(self._want)
+                if not want["visible"] or not want["rect"]:
+                    if self._shown:
+                        user32.ShowWindow(self.hwnd, _SW_HIDE)
+                        self._shown = False
+                    while self.q.qsize() > 20:      # 隐藏时只留最近的
+                        try:
+                            self.q.get_nowait()
+                        except queue.Empty:
+                            break
+                    self._stop.wait(0.05)
+                    last_t = pc()
+                    continue
+                self._frame(want)
+                t_before = pc()
+                if dwmapi is not None:
+                    for _ in range(self._div):      # 高刷屏（>165Hz）隔帧画，省 CPU，仍和刷新对齐
+                        dwmapi.DwmFlush()
+                # DwmFlush 没真正等待（合成被关等极少见情况）：自己按刷新率睡
+                if dwmapi is None or pc() - t_before < 0.002:
+                    time.sleep(max(0.0, self._div / float(self.refresh) - (pc() - last_t)))
+                now = pc()
+                self.frame_log.append((now, self._work_ms))
+                dt = min(now - last_t, 0.1)
+                last_t = now
+                if not self.freeze:
+                    self._clock += dt
+            except Exception:
+                self.errors += 1
+                time.sleep(0.05)
+                last_t = pc()
+
+    def _frame(self, want):
+        pc = time.perf_counter
+        t0 = pc()
+        x, y, W, H = want["rect"]
+        W, H = max(W, 50), max(H, 50)
+        frac = AREA_FRAC.get(self.s["dm_area"], 0.5)
+        Hc = max(self.line_h + 4, min(H, int(H * frac) + 4))
+        if (W, Hc) != (self._cw, self._ch):
+            self._alloc(W, Hc)
+        self._geo = "%dx%d+%d+%d" % (W, Hc, x, y)
+        if not self._shown:
+            user32.ShowWindow(self.hwnd, _SW_SHOWNOACTIVATE)
+            self._shown = True
+            self._seq = -1
+        if want["seq"] != self._seq:
+            self._seq = want["seq"]
+            self._zorder(want["above"], want["topmost"])
+        canvas, clock = self._canvas, self._clock
+        lanes = max(1, int(H * frac // self.line_h))
+        # 1) 擦掉上一帧画的
+        for it in self._items:
+            if it["box"]:
+                canvas.paste(_CLEAR, it["box"])
+        # 2) 移除出屏的
+        alive = []
+        for it in self._items:
+            if it["x0"] - it["v"] * (clock - it["c0"]) + it["w"] < -2:
+                it["box"] = None
+                if self._lane_last.get(it["lane"]) is it:
+                    del self._lane_last[it["lane"]]
+            else:
+                alive.append(it)
+        self._items = alive
+        # 3) 发新弹幕
+        self._spawn_some(W, lanes, clock, t0)
+        # 4) 画：位置 = 起点 - 速度 × 动画时钟（时间驱动，小数累积，只在最后取整一次）
+        trace = self.trace_on
+        first = True
+        for it in self._items:
+            xf = it["x0"] - it["v"] * (clock - it["c0"])
+            xi = math.floor(xf + 0.5)
+            sx = xi + it["ox"]
+            sy = it["y"]
+            canvas.paste(it["spr"], (sx, sy))
+            it["box"] = (sx, sy, sx + it["sw"], sy + it["sh"])
+            if trace and first:
+                self.trace.append((t0, xf, xi))
+            first = False
+        # 5) 提交（位置和内容一起原子更新）
+        bf = _BLEND(0, 0, max(1, min(255, int(float(self.s["dm_alpha"]) * 255))), 1)
+        pt, sz, src = _POINT(x, y), _SIZE(self._cw, self._ch), _POINT(0, 0)
+        user32.UpdateLayeredWindow(self.hwnd, None, ctypes.byref(pt), ctypes.byref(sz), self._memdc,
+                                   ctypes.byref(src), 0, ctypes.byref(bf), _ULW_ALPHA)
+        self._work_ms = (pc() - t0) * 1000.0
+
+    # ---- 发弹幕
+    def _speed_for(self, W, text):
+        base = W / max(2.0, float(self.s["dm_speed"]))
+        # 长弹幕略快、短弹幕略慢（±8%），避免所有弹幕完全同速的呆板感
+        return base * (0.92 + 0.16 * min(1.0, len(text) / 20.0))
+
+    def _lane_ok(self, lane, v, W, clock):
+        prev = self._lane_last.get(lane)
+        if prev is None:
+            return True
+        xr = prev["x0"] + prev["w"] - prev["v"] * (clock - prev["c0"])   # 前一条右端
+        s0 = W - xr                                                       # 新弹幕左端在 W 处，两者间距
+        if s0 < self.line_h:
+            return False
+        if v > prev["v"]:    # 新的更快：前一条出屏之前不许追上（留 0.4 行高间隙）
+            if s0 - (v - prev["v"]) * max(xr, 0.0) / prev["v"] < 0.4 * self.line_h:
+                return False
+        return True
+
+    def _spawn_some(self, W, lanes, clock, t0):
+        pc = time.perf_counter
+        maxn = int(self.s.get("dm_max", 80))
+        while self.q.qsize() > 80:   # 积压太多就丢最老的
+            try:
+                self.q.get_nowait()
+                self.dropped += 1
+            except queue.Empty:
+                break
+        n = 0
+        while n < 3 and len(self._items) < maxn and (pc() - t0) < 0.006:
+            if self._held is None:
+                try:
+                    self._held = (self._clean(_ASTRAL.sub("", self.q.get_nowait()))[:60].strip(), pc())
+                except queue.Empty:
+                    return
+            text, th = self._held
+            if not text:
+                self._held = None
+                continue
+            v = self._speed_for(W, text)
+            free = [ln for ln in range(lanes) if self._lane_ok(ln, v, W, clock)]
+            if not free:
+                if pc() - th > 2.0:       # 等太久就丢，别让弹幕过时
+                    self._held = None
+                    self.dropped += 1
+                return
+            if len(free) > 1 and self._last_lane in free:
+                free.remove(self._last_lane)
+            lane = random.choice(free)
+            sp = self._sprite(text)
+            self._held = None
+            if sp is None:
+                continue
+            spr, ox, oy, sw, sh = sp
+            it = dict(spr=spr, ox=ox, sw=sw, sh=sh, x0=float(W), c0=clock, v=v, w=sw + ox, lane=lane,
+                      y=lane * self.line_h + 2 + oy, box=None)
+            self._items.append(it)
+            self._lane_last[lane] = it
+            self._last_lane = lane
+            n += 1
 
 
 # ====================================================================== 全局快捷键
@@ -858,7 +1362,7 @@ class HotkeyThread(threading.Thread):
 class DanmakuManager:
     """串起：开关 / 弹幕客户端 / 悬浮层 / 窗口跟随。所有方法都在 tk 主线程里调用。"""
 
-    FOLLOW_MS = 150
+    FOLLOW_MS = 60
 
     def __init__(self, root, cfg, save_cfg, status=lambda s, c=None: None):
         self.root, self.cfg, self.save_cfg, self.status = root, cfg, save_cfg, status
@@ -939,7 +1443,7 @@ class DanmakuManager:
                 self.status("该平台的弹幕暂不支持", None)
                 return
             if self.overlay is None:
-                self.overlay = Overlay(self.root, self.cfg)
+                self.overlay = self._make_overlay()
             if self.client is None or not self.client.is_alive():
                 self.count = 0
                 self.client = CLIENTS[plat](self.session["rid"], self._on_msg, self._on_status)
@@ -955,6 +1459,24 @@ class DanmakuManager:
             if self._follow_job:
                 self.root.after_cancel(self._follow_job)
                 self._follow_job = None
+
+    def _make_overlay(self):
+        """按配置建悬浮层；新渲染建不起来就自动退回旧的 Tk 画布实现。"""
+        if self.cfg.get("dm_renderer", RENDERERS[0]) == RENDERERS[0]:
+            try:
+                return LayeredOverlay(self.root, self.cfg)
+            except Exception as e:
+                self.last_status = "平滑渲染不可用，已改用兼容模式（%s）" % e
+        return Overlay(self.root, self.cfg)
+
+    def set_renderer(self, name):
+        """设置里切换渲染方式：销毁当前悬浮层，下次 _sync 重建。"""
+        self.cfg["dm_renderer"] = name
+        self.save_cfg()
+        if self.overlay:
+            self.overlay.destroy()
+            self.overlay = None
+            self._sync()
 
     def _on_msg(self, text):  # 客户端线程里调用
         self.count += 1

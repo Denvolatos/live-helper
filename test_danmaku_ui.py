@@ -32,17 +32,34 @@ def state(tag):
     dm = a.dm; ov = dm.overlay
     r = danmaku.client_rect(dm.hwnd) if dm.hwnd else None
     log(tag, "pot_hwnd", dm.hwnd, "client", r, "overlay_visible", ov.visible if ov else None,
-        "overlay_geo", ov.win.winfo_geometry() if ov else None, "收到弹幕数", dm.count,
+        "overlay_geo", ov.geometry() if ov else None, "renderer", getattr(ov, "kind", None), "min_gap_px", OVL["min_gap"], "overlap次数", OVL["bad"], "采样", OVL["n"], "渲染异常", getattr(ov, "errors", None), "收到弹幕数", dm.count,
         "屏上", len(ov.items) if ov else None, "丢弃", ov.dropped if ov else None, "client_ok", dm.client.connected if dm.client else None)
+OVL = dict(min_gap=None, bad=0, n=0)
+def overlap_watch():
+    """每 300ms 检查一次：同一行相邻两条弹幕的间距（负数=重叠）。只对分层渲染有效。"""
+    ov = a.dm.overlay
+    if ov is not None and getattr(ov, "kind", "") == "layered" and ov.visible:
+        clk, lanes = ov._clock, {}
+        for it in list(ov._items):
+            xl = it["x0"] - it["v"] * (clk - it["c0"])
+            lanes.setdefault(it["lane"], []).append((xl, xl + it["w"]))
+        for L in lanes.values():
+            L.sort()
+            for (l1, r1), (l2, r2) in zip(L, L[1:]):
+                g = l2 - r1; OVL["n"] += 1
+                OVL["min_gap"] = g if OVL["min_gap"] is None else min(OVL["min_gap"], g)
+                if g < 0: OVL["bad"] += 1
+    a.after(300, overlap_watch)
 steps = []
 def s_play():
+    overlap_watch()
     a.potplayer = core.find_potplayer(a.cfg); log("potplayer", a.potplayer)
     a.play_item(dict(platform=PLAT, rid=RID, name="测试", avatar="")); log("hotkey_ok", a.hotkey_ok)
 def s_state1(): state("播放20s后")
 def s_shot1(): shot("dm_01_playing.png"); log("前3条弹幕文本(overlay已收):", getattr(a.dm, "sample", None))
 def s_move():
     h = a.dm.hwnd
-    user32.MoveWindow(h, 100, 100, 800, 500, True); log("移动PotPlayer到(100,100,800x500)")
+    user32.ShowWindow(h, 1); time.sleep(0.3); user32.MoveWindow(h, 100, 100, 800, 500, True); log("移动PotPlayer到(100,100,800x500)")
 def s_state2(): state("移动后"); shot("dm_02_moved.png")
 def s_min():
     user32.ShowWindow(a.dm.hwnd, 6); log("最小化PotPlayer")

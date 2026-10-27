@@ -330,21 +330,29 @@ class DanmakuSettings(ctk.CTkToplevel):
         slider(1, "字号", "dm_font", 16, 56, 40, lambda v: "%d" % v)
         slider(2, "透明度", "dm_alpha", 0.3, 1.0, 14, lambda v: "%d%%" % round(float(v) * 100))
         slider(3, "飘过时间", "dm_speed", 4, 16, 12, lambda v: "%d 秒" % v)
-        ctk.CTkLabel(box, text="显示区域", font=F(13), text_color=FG2).grid(row=4, column=0, sticky="w", padx=(22, 10), pady=6)
+        slider(4, "同屏最多", "dm_max", 20, 150, 13, lambda v: "%d 条" % v)
+        ctk.CTkLabel(box, text="显示区域", font=F(13), text_color=FG2).grid(row=5, column=0, sticky="w", padx=(22, 10), pady=6)
         self.area = ctk.CTkOptionMenu(box, values=danmaku.AREAS, width=190, height=32, corner_radius=10, font=F(13),
                                       dropdown_font=F(13), fg_color=BTN2, text_color=FG, button_color=BTN2_HOVER,
                                       button_hover_color=BTN2_HOVER, dropdown_fg_color=CARD, dropdown_text_color=FG,
                                       dropdown_hover_color=CARD_HOVER, command=self._area)
         self.area.set(cfg.get("dm_area", "上半屏"))
-        self.area.grid(row=4, column=1, columnspan=2, sticky="w", pady=6)
+        self.area.grid(row=5, column=1, columnspan=2, sticky="w", pady=6)
+        ctk.CTkLabel(box, text="渲染方式", font=F(13), text_color=FG2).grid(row=6, column=0, sticky="w", padx=(22, 10), pady=6)
+        self.rend = ctk.CTkOptionMenu(box, values=danmaku.RENDERERS, width=190, height=32, corner_radius=10, font=F(13),
+                                      dropdown_font=F(13), fg_color=BTN2, text_color=FG, button_color=BTN2_HOVER,
+                                      button_hover_color=BTN2_HOVER, dropdown_fg_color=CARD, dropdown_text_color=FG,
+                                      dropdown_hover_color=CARD_HOVER, command=self._renderer)
+        self.rend.set(cfg.get("dm_renderer", danmaku.RENDERERS[0]))
+        self.rend.grid(row=6, column=1, columnspan=2, sticky="w", pady=6)
         hk = "快捷键 Ctrl+Alt+D 随时开关弹幕。" if hotkey_ok else "快捷键 Ctrl+Alt+D 注册失败（被别的软件占用），请用界面上的开关。"
         tip = (hk + "\n弹幕是盖在 PotPlayer 上的透明窗口：窗口化和普通全屏可见；"
-               "若 PotPlayer 设为“独占全屏”（Exclusive），弹幕可能被挡住看不到。")
+               "若 PotPlayer 设为“独占全屏”（Exclusive），弹幕可能被挡住看不到。\n弹幕显示异常（重影、不显示）时，把“渲染方式”切到“兼容（旧）”。")
         ctk.CTkLabel(box, text=tip, font=F(12), text_color=FG2, justify="left", wraplength=400).grid(
-            row=5, column=0, columnspan=3, sticky="w", padx=22, pady=(10, 6))
+            row=7, column=0, columnspan=3, sticky="w", padx=22, pady=(10, 6))
         ctk.CTkButton(box, text="完成", width=100, height=34, corner_radius=10, fg_color=PRIMARY,
                       hover_color=PRIMARY_HOVER, text_color=ON_PRIMARY, font=F(13, True),
-                      command=self.destroy).grid(row=6, column=0, columnspan=3, sticky="e", padx=22, pady=(6, 18))
+                      command=self.destroy).grid(row=8, column=0, columnspan=3, sticky="e", padx=22, pady=(6, 18))
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
         y = app.winfo_rooty() + (app.winfo_height() - self.winfo_height()) // 3
@@ -353,6 +361,9 @@ class DanmakuSettings(ctk.CTkToplevel):
     def _area(self, v):
         self.cfg["dm_area"] = v
         self.dm.apply_settings()
+
+    def _renderer(self, v):
+        self.dm.set_renderer(v)   # “平滑”= 自绘分层窗口（默认）；“兼容”= 旧的 Tk 画布，万一平滑版在某台电脑上异常可切回
 
 
 # ---------------------------------------------------------------- 主窗口
