@@ -14,5 +14,7 @@ if errorlevel 1 exit /b 1
   --exclude-module matplotlib --exclude-module numpy --exclude-module pandas ^
   app.py
 if errorlevel 1 exit /b 1
+copy /y LICENSE dist\LiveHelper\ >nul
+copy /y THIRD_PARTY_NOTICES.md dist\LiveHelper\ >nul
 "%PY%" -c "import shutil;from version import __version__ as v;shutil.make_archive('LiveHelper-v'+v+'-win64','zip','dist','LiveHelper');print('zip ok',v)"
 endlocal
