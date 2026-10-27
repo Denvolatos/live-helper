@@ -1,0 +1,10 @@
+build/
+dist/
+dist_*/
+Output/
+*.zip
+*.spec
+version_info.txt
+__pycache__/
+*.pyc
+screenshots/*.log
