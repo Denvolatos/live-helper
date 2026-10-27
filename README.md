@@ -8,7 +8,7 @@
 
 虎牙 / 斗鱼 / B 站，一个小工具搞定
 
-![version](https://img.shields.io/badge/version-v1.1.2-FF7A00)
+![version](https://img.shields.io/badge/version-v1.1.3-FF7A00)
 ![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![python](https://img.shields.io/badge/python-3.12-3776AB)
@@ -32,7 +32,7 @@
 ## ✨ 功能
 
 - 🔍 **搜索**：三个平台可分别勾选；也可以直接输入房间号或房间链接
-- ▶️ **播放**：用 streamlink 管道播放进 PotPlayer（斗鱼的流地址几分钟就过期，管道播放不会中途断）
+- ▶️ **播放**：用 streamlink 管道播放进 PotPlayer（比只把一次性地址贴给播放器更稳，因为可以重新拉流）。**注意：斗鱼的流约每 5 分钟会被服务器切断，目前没有自动续播，需要重新点播放**
 - 🎚️ **画质**：选中主播后查询该房间真实有的档位，显示成"原画（源码流）/ 超清 8 Mbps / 流畅 0.5 Mbps"这样的描述
 - ⭐ **收藏**：常看的主播一键播放，启动时后台刷新是否在播
 - 💬 **弹幕悬浮层**：透明、置顶、点击穿透，跟随 PotPlayer 窗口；播放栏有开关，全局快捷键 `Ctrl+Alt+D`；字号 / 透明度 / 飘过时间 / 显示区域 / 同屏上限可调
@@ -54,6 +54,7 @@
 |---|---|
 | `LiveHelper-Setup-vX.Y.Z.exe` | 安装包，双击安装，创建桌面快捷方式，可在"设置 → 应用"卸载 |
 | `LiveHelper-vX.Y.Z-win64.zip` | 免安装文件夹版，解压后运行 `LiveHelper.exe` |
+| `THIRD_PARTY_NOTICES.md` | 第三方组件的许可证声明（安装包和 zip 里也带有，另附 `LICENSE`） |
 | `SHA256SUMS.txt` | 校验值，用 `Get-FileHash <文件> -Algorithm SHA256` 对比 |
 
 **系统要求**：Windows（作者在 Windows 11 上开发和测试，Windows 10 未验证）；需要 [PotPlayer](https://potplayer.daum.net/)（没有的话程序会询问是否用 winget 安装）。
@@ -70,6 +71,7 @@
 
 - 三个平台的**弹幕接口都是逆向得到的**，平台改动后可能失效（协议笔记见 [docs/DANMAKU.md](docs/DANMAKU.md)）
 - PotPlayer **独占全屏**时弹幕可能看不到（普通全屏正常）
+- **斗鱼的流约 5 分钟断流**（2026-10-27 实测：约 300 秒后服务器切断，streamlink 正常退出），目前没有自动续播，需要重新点播放；虎牙、B 站的断流情况未测
 - 斗鱼搜索接口有风控，频繁搜索会提示"行为存在风险"，可改用房间号
 - 弹幕里的 emoji 表情会被去掉；等空行超过 2 秒的弹幕会被丢弃
 - 只做 Windows。高 DPI、多显示器、60Hz 显示器、别人的电脑、杀毒误报等未充分验证
@@ -92,6 +94,8 @@ danmaku.py        三平台弹幕客户端 + 悬浮层 + 跟随窗口 + 全局�
 version.py        版本号（唯一定义处）
 build.bat         PyInstaller 打包（见 docs/BUILD.md）
 LiveHelper.iss    Inno Setup 安装包脚本
+LICENSE           本项目许可证（AGPL-3.0）
+THIRD_PARTY_NOTICES.md   第三方组件的版本、许可证与许可证全文
 make_icon.py / make_version.py   生成图标 / exe 版本信息
 test_*.py, bench_*.py, measure_motion.py   实测与性能脚本
 docs/             构建说明、弹幕协议笔记、验证状态
@@ -112,4 +116,4 @@ screenshots/      界面截图（均为假数据）
 
 ## 🧱 依赖
 
-[streamlink](https://github.com/streamlink/streamlink)（BSD-2-Clause）、[customtkinter](https://github.com/TomSchimansky/CustomTkinter)（MIT）、requests、Pillow、websocket-client、brotli、psutil、PyInstaller、Inno Setup。PotPlayer 不随软件分发。各依赖的许可证文本公开前需再核对一遍。
+[streamlink](https://github.com/streamlink/streamlink)（BSD-2-Clause）、[customtkinter](https://github.com/TomSchimansky/CustomTkinter)（MIT）、requests、Pillow、websocket-client、brotli、psutil、PyInstaller、Inno Setup。PotPlayer 不随软件分发。完整的第三方组件清单、各自的许可证和许可证原文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)（含 PyInstaller、pycountry、certifi 等需要特别说明的组件和尚未核对的清单）；安装后在安装目录里，也能找到这两个文件。
