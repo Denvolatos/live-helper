@@ -23,6 +23,7 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\LiveHelper.exe
+SetupIconFile=icon.ico
 
 ; 官方 Inno Setup 不带简体中文语言包，向导界面用默认英文；快捷方式和任务说明仍是中文
 
