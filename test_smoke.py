@@ -6,19 +6,25 @@ import core
 if not getattr(sys, "frozen", False):
     sys.argv[0] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
 
-for kw in ["示例主播甲", "示例主播乙", "示例主播丙"]:
+ROOMS = core.pick_live_rooms(log=print)  # 中性关键词搜索，取各平台第一个在播房间；可用 LIVEHELPER_SELFTEST_ROOMS 覆盖
+print("找到在播房间的平台:", list(ROOMS))
+for kw in core.NEUTRAL_KEYWORDS[:3]:
     for p in core.PLATFORMS:
         try:
             r = core.SEARCHERS[p](kw)
-            print(kw, p, len(r), [(x["name"], x["rid"], x["live"]) for x in r[:2]])
+            print(kw, p, len(r), "在播", sum(1 for x in r if x["live"]))
         except Exception as e:
             print(kw, p, "ERR", e)
 print("potplayer:", core.find_potplayer({}))
-print("douyu url:", core.resolve_stream_url("https://www.douyu.com/222222")[:100])
-print("huya url:", core.resolve_stream_url("https://www.huya.com/111111")[:100])
+for p in ("douyu", "huya"):
+    if p in ROOMS:
+        print(p, "url ok:", bool(core.resolve_stream_url(core.room_url(p, ROOMS[p]))))
 if "--play" in sys.argv:
     pp = core.find_potplayer({})
-    pr = core.start_play(pp, "https://www.douyu.com/222222", "best")
+    play_p = next((p for p in ("douyu", "huya") if p in ROOMS), None)
+    if not play_p:
+        sys.exit("没有找到可播放的在播房间")
+    pr = core.start_play(pp, core.room_url(play_p, ROOMS[play_p]), "best")
     time.sleep(20)
     print("streamlink alive:", pr.poll() is None)
     q = 'tasklist /FI "IMAGENAME eq PotPlayerMini64.exe"'

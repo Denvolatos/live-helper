@@ -120,7 +120,7 @@ def douyu_pack(s):
 class DouyuClient(DanmakuClient):
     """斗鱼弹幕。
 
-    官方文档写的是 wss://danmuproxy.douyu.com:8506/，但在海外（意大利）DNS 会解析到
+    官方文档写的是 wss://danmuproxy.douyu.com:8506/，但在海外网络环境下 DNS 会解析到
     海外节点，TLS 握手直接被拒；实测同一 STT 协议走 TCP 8601（danmu.douyu.com）可用，
     所以先走 TCP 8601，失败再试 wss 8506。
     """

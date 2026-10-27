@@ -14,7 +14,8 @@ shutil.rmtree(core.APPDIR, ignore_errors=True)
 import app, danmaku
 from danmaku import user32
 from PIL import ImageGrab
-PLAT, RID = (sys.argv_extra if hasattr(sys, "argv_extra") else os.environ.get("DM_TEST", "douyu:222222").split(":"))
+_spec = os.environ.get("DM_TEST") or "%s:%s" % next(iter(core.pick_live_rooms().items()))  # 形如 douyu:房间号；不设则自动找一个在播房间
+PLAT, RID = (sys.argv_extra if hasattr(sys, "argv_extra") else _spec.split(":"))
 out = os.path.join(here, "screenshots"); os.makedirs(out, exist_ok=True)
 logf = open(os.path.join(out, "danmaku_test.log"), "a", encoding="utf-8")
 def log(*a):

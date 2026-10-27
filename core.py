@@ -288,6 +288,37 @@ def lookup_many(platforms, rid, log=lambda m: None):
     return res
 
 
+NEUTRAL_KEYWORDS = ("英雄联盟", "CS2", "王者荣耀", "和平精英", "音乐")
+
+
+def pick_live_rooms(platforms=None, keywords=NEUTRAL_KEYWORDS, log=lambda m: None):
+    """自检/测试用：不写死任何主播。用中性关键词在各平台搜索，取第一个正在直播的房间。
+    环境变量 LIVEHELPER_SELFTEST_ROOMS（形如 douyu:123,huya:abc,bili:456）可覆盖。
+    返回 {平台: 房间号}，找不到的平台不在结果里。"""
+    platforms = list(platforms or PLATFORMS)
+    found = {}
+    env = os.environ.get("LIVEHELPER_SELFTEST_ROOMS", "").strip()
+    if env:
+        for part in env.split(","):
+            if ":" in part:
+                p, rid = part.split(":", 1)
+                if p.strip() in PLATFORMS and rid.strip():
+                    found[p.strip()] = rid.strip()
+    for p in platforms:
+        if p in found:
+            continue
+        for kw in keywords:
+            try:
+                hit = next((x for x in SEARCHERS[p](kw) if x["live"]), None)
+            except Exception as e:
+                log("%s 用关键词 %s 搜索失败：%s" % (p, kw, e))
+                continue
+            if hit:
+                found[p] = hit["rid"]
+                break
+    return {p: found[p] for p in platforms if p in found}
+
+
 def search_all(kw, platforms, log=lambda m: None):
     """依次搜索各平台，单平台失败不影响其他。返回结果列表（在播的排前面）。"""
     res = []

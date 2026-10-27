@@ -16,7 +16,7 @@ from PIL import ImageGrab
 
 out = os.path.join(here, "screenshots")
 os.makedirs(out, exist_ok=True)
-kw = sys.argv_kw if hasattr(sys, "argv_kw") else os.environ.get("UI_KW", "示例主播乙")
+kw = sys.argv_kw if hasattr(sys, "argv_kw") else os.environ.get("UI_KW", "英雄联盟")
 a = app.App()
 
 

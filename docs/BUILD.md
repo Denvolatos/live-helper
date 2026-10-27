@@ -46,7 +46,9 @@ $env:PATH = "C:\Windows\System32;C:\Windows"
 Get-Content "$env:TEMP\selftest.txt"
 ```
 
-`--selftest` 会做三平台的搜索、房间查询、流解析，并各连十几秒统计弹幕条数。退出码 0 且文件里有数据才算通过。
+`--selftest` 会先用中性关键词（英雄联盟、CS2 等）在三平台各找一个正在直播的房间（也可用环境变量 `LIVEHELPER_SELFTEST_ROOMS=douyu:xxx,huya:yyy,bili:zzz` 指定），再做搜索、房间查询、流解析，并各连十几秒统计弹幕条数。输出只写平台、条数和是否通过，不写主播昵称。退出码 0 且文件里有数据才算通过。
+
+`build.bat` 会把 `LICENSE` 和 `THIRD_PARTY_NOTICES.md` 复制进 `dist\LiveHelper` 再打 zip，安装包脚本也会把这两个文件装到安装目录。
 
 ## 一个内部约定
 

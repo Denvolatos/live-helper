@@ -1,25 +1,25 @@
 # 💬 弹幕：协议笔记与渲染
 
-> 三个平台的弹幕接口都是**逆向得到的**，不是官方文档公开的接口，平台改动后随时可能失效。下面记录的是 2026-10-27 在作者电脑（意大利网络环境）上用真实直播间验证过的做法。
+> 三个平台的弹幕接口都是**逆向得到的**，不是官方文档公开的接口，平台改动后随时可能失效。下面记录的是 2026-10-27 在作者的电脑（海外网络环境）上用真实直播间验证过的做法。
 
 ## 一、接收弹幕
 
 ### 斗鱼
 - STT 文本协议：`loginreq` → `joingroup`（gid=-9999）→ 收 `chatmsg`，每 40 秒发一次 `mrkl` 心跳。
 - 官方的 `wss://danmuproxy.douyu.com:8506/` 在作者的网络里 TLS 握手被拒（DNS 解析到了海外节点）；**同一协议走裸 TCP `danmu.douyu.com:8601` 可用**，所以程序先走 TCP 8601，失败再试 wss 8506（wss 备用路径未验证）。
-- 实测房间：222222。
+- 实测房间：某个在播的公开直播间（号码略）。
 
 ### B 站
 - 先访问 `bilibili.com` 取 `buvid3` → 请求 `x/web-interface/nav` 取 wbi 的 key → 用 **wbi 签名**请求 `xlive/web-room/v1/index/getDanmuInfo`（不签名会返回 -352）→ 得到 token 和服务器列表。
 - 连接 wss `/sub`，认证包 op=7（匿名 uid=0，protover=3），心跳 op=2 每 25 秒。包体 protover 3 用 brotli、2 用 zlib 压缩；取 `DANMU_MSG` 的 `info[1]` 作为弹幕文字，纯表情占位（如 `[xxx_xxx]`）会被过滤。
 - 匿名连接时发送者昵称被屏蔽，只显示文字。
-- 实测房间：333333。
+- 实测房间：某个在播的公开直播间（号码略）。
 
 ### 虎牙
 - 从房间页取 `yyid`、`lChannelId`、`lSubChannelId` → 连 `wss://cdnws.api.huya.com` → 发 Tars 的 `WebSocketCommand`（iCmdType=1，带 yyid 与频道号）→ 每 30 秒一次心跳 → 收 cmd=7 的 `WSPushMessage`，`iUri=1400` 是 `MessageNotice`，其中 `sContent` 就是弹幕。
 - 走过的弯路：用 cmd=16 按 `live:/chat:yyid` 分组订阅，能连上（会收到 cmd=17 回执）但收不到 1400 弹幕，所以改用 yyid 加频道号注册。
 - 主播未开播时房间页里没有 `lChannelId`，客户端会报错并退避重试。
-- 实测房间：111111。
+- 实测房间：某个在播的公开直播间（号码略）。
 
 ## 二、渲染（v1.1.1 起）
 

@@ -21,27 +21,39 @@ def _run_streamlink_cli():
 
 
 def _selftest(outfile):
-    """隐藏自检：搜索三平台 + 房间查询 + 解析流地址 + 检测 PotPlayer，结果写入文件。"""
+    """隐藏自检：用中性关键词在三平台各找一个正在直播的房间（或读环境变量
+    LIVEHELPER_SELFTEST_ROOMS=douyu:xxx,huya:yyy,bili:zzz），再测搜索、房间查询、解析流地址、弹幕、PotPlayer 检测。
+    结果写入文件；只写平台、条数、是否通过，不写主播昵称和房间号。"""
     import core
     lines = []
-    for p, kw in (("douyu", "示例主播甲"), ("huya", "示例主播乙"), ("bili", "示例主播丙")):
+    rooms = core.pick_live_rooms(log=lambda m: lines.append("提示: " + m))
+    for p in core.PLATFORMS:
+        if p not in rooms:
+            lines.append("找房间 %s: 未找到正在直播的房间" % p)
+    for p in rooms:
         try:
-            r = core.SEARCHERS[p](kw)
-            lines.append("搜索 %s '%s': %d 条, 首条=%s" % (p, kw, len(r), r[0]["name"] if r else None))
+            r = core.SEARCHERS[p](core.NEUTRAL_KEYWORDS[0])
+            lines.append("搜索 %s: %d 条, 通过=%s" % (p, len(r), bool(r)))
         except Exception as e:
             lines.append("搜索 %s 失败: %s" % (p, e))
-    for p, rid in (("douyu", "222222"), ("huya", "111111"), ("bili", "15075163")):
+    for p, rid in rooms.items():
         try:
             r = core.lookup_room(p, rid)
-            lines.append("房间查询 %s %s: %s 在播=%s" % (p, rid, r["name"], r["live"]))
+            lines.append("房间查询 %s: 通过=%s 在播=%s" % (p, True, r["live"]))
         except Exception as e:
             lines.append("房间查询 %s 失败: %s" % (p, e))
-    for u in ("https://www.douyu.com/222222", "https://www.huya.com/111111"):
-        lines.append("解析 %s -> %s" % (u, core.resolve_stream_url(u)[:80]))
-    # 弹幕：各连 12 秒，统计收到的条数（文本前 2 条做样例）
+    for p in ("douyu", "huya"):
+        if p not in rooms:
+            continue
+        try:
+            u = core.resolve_stream_url(core.room_url(p, rooms[p]))
+            lines.append("解析 %s: 通过=%s" % (p, bool(u)))
+        except Exception as e:
+            lines.append("解析 %s 失败: %s" % (p, e))
+    # 弹幕：各连 12 秒，统计收到的条数（不记录内容）
     try:
         import danmaku, time as _t
-        for p, rid in (("douyu", "222222"), ("huya", "111111"), ("bili", "333333")):
+        for p, rid in rooms.items():
             got = []
             c = danmaku.CLIENTS[p](rid, got.append)
             c.start()
@@ -49,7 +61,7 @@ def _selftest(outfile):
             while _t.time() - t0 < 12 and len(got) < 3:
                 _t.sleep(0.3)
             c.stop()
-            lines.append("弹幕 %s %s: 收到 %d 条, 样例=%s" % (p, rid, len(got), got[:2]))
+            lines.append("弹幕 %s: 收到 %d 条, 通过=%s" % (p, len(got), len(got) > 0))
     except Exception as e:
         lines.append("弹幕自检失败: %s" % e)
     lines.append("PotPlayer: %s" % core.find_potplayer({}))
