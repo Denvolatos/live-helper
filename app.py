@@ -64,6 +64,7 @@ if len(sys.argv) > 2 and sys.argv[1] == "--selftest":
     sys.exit(0)
 
 import queue
+import ctypes
 from version import __version__
 import threading
 import tkinter as tk
@@ -77,27 +78,36 @@ import core
 import danmaku
 
 # ---------------------------------------------------------------- 主题
+# 所有颜色都是 (浅色, 深色) 元组：切换主题时只调 ctk.set_appearance_mode，控件自己按主题重绘，不销毁重建。
 PCOL = {"huya": "#FF9600", "douyu": "#FF5D23", "bili": "#FB7299"}
-THEMES = {
-    "light": dict(BG="#F4F5F7", CARD="#FFFFFF", CARD_HOVER="#F0F2F5", CARD_SEL="#FFF4E8", BORDER="#E6E8EC",
-                  FG="#1F2329", FG2="#5F6672", LIVE_RED="#FF3B30", PRIMARY="#FF7A00", PRIMARY_HOVER="#E56D00",
-                  ON_PRIMARY="#FFFFFF", SEL_BORDER="#FFB266", BTN2="#EEF0F3", BTN2_HOVER="#E3E6EA",
-                  PILL_BG={"huya": "#FFF3E0", "douyu": "#FFEDE6", "bili": "#FFE8F0"},
-                  PILL_FG={"huya": "#C26F00", "douyu": "#E04A12", "bili": "#D9457A"}, mode="light"),
-    "dark": dict(BG="#14161A", CARD="#1F2229", CARD_HOVER="#2A2E37", CARD_SEL="#31353F", BORDER="#1F2229",
-                 FG="#E8EAED", FG2="#8A8F98", LIVE_RED="#FF4D4F", PRIMARY="#FF9600", PRIMARY_HOVER="#E08600",
-                 ON_PRIMARY="#1A1A1A", SEL_BORDER="#FF9600", BTN2="#2A2E37", BTN2_HOVER="#31353F",
-                 PILL_BG=dict(PCOL), PILL_FG={k: "#1A1A1A" for k in PCOL}, mode="dark"),
-}
+BG = ("#F4F5F7", "#14161A")
+CARD = ("#FFFFFF", "#1F2229")
+CARD_HOVER = ("#F0F2F5", "#2A2E37")
+CARD_SEL = ("#FFF4E8", "#31353F")
+BORDER = ("#E6E8EC", "#1F2229")
+FG = ("#1F2329", "#E8EAED")
+FG2 = ("#5F6672", "#8A8F98")
+LIVE_RED = ("#FF3B30", "#FF4D4F")
+PRIMARY = ("#FF7A00", "#FF9600")
+PRIMARY_HOVER = ("#E56D00", "#E08600")
+ON_PRIMARY = ("#FFFFFF", "#1A1A1A")
+SEL_BORDER = ("#FFB266", "#FF9600")
+BTN2 = ("#EEF0F3", "#2A2E37")
+BTN2_HOVER = ("#E3E6EA", "#31353F")
+PILL_BG = {"huya": ("#FFF3E0", PCOL["huya"]), "douyu": ("#FFEDE6", PCOL["douyu"]), "bili": ("#FFE8F0", PCOL["bili"])}
+PILL_FG = {"huya": ("#C26F00", "#1A1A1A"), "douyu": ("#E04A12", "#1A1A1A"), "bili": ("#D9457A", "#1A1A1A")}
+TRACK = ("#D5D9DF", "#3A3F4A")          # 滑块轨道 / 开关底
+KNOB = ("#FFFFFF", "#E8EAED")           # 开关圆钮
+SCROLL = ("#C9CDD3", "#3A3F4A")         # 滚动条
+SCROLL_HOVER = ("#AEB3BB", "#4C5262")
 FONT = "Microsoft YaHei UI"
-THEME = "light"
+THEME = "light"   # 当前主题名，仅用于记录/显示；颜色本身由 customtkinter 按 appearance mode 选择
 
 
 def apply_theme(name):
     global THEME
-    THEME = name if name in THEMES else "light"
-    globals().update(THEMES[THEME])
-    ctk.set_appearance_mode(THEMES[THEME]["mode"])
+    THEME = name if name in ("light", "dark") else "light"
+    ctk.set_appearance_mode(THEME)
 
 
 apply_theme("light")
@@ -105,6 +115,52 @@ apply_theme("light")
 
 def F(size=13, bold=False):
     return ctk.CTkFont(family=FONT, size=size, weight="bold" if bold else "normal")
+
+
+# ---------------------------------------------------------------- Windows 标题栏深浅色
+# customtkinter 每次切换主题/创建窗口都会把窗口 withdraw 再 deiconify 来刷新标题栏，肉眼就是"整窗闪一下"。
+# 这里关掉它的做法，自己用 DwmSetWindowAttribute 设置并强制重画标题栏，窗口全程保持显示。
+_TITLED = []
+
+
+def set_titlebar(win):
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        val = ctypes.c_int(1 if ctk.get_appearance_mode() == "Dark" else 0)
+        if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(val), ctypes.sizeof(val)) != 0:
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(val), ctypes.sizeof(val))
+        # 不移动不改大小，只通知系统重画非客户区（标题栏）
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020)
+    except Exception:
+        pass
+
+
+def track_titlebar(win):
+    _TITLED.append(win)
+    set_titlebar(win)
+
+
+def retitle_all():
+    for w in list(_TITLED):
+        try:
+            if w.winfo_exists():
+                set_titlebar(w)
+            else:
+                _TITLED.remove(w)
+        except Exception:
+            pass
+
+
+def center_show(win, master, third=True):
+    """窗口先隐藏建好控件，算好位置再一次性显示，避免弹出时闪白/闪黑。"""
+    win.update_idletasks()
+    x = master.winfo_rootx() + (master.winfo_width() - win.winfo_width()) // 2
+    y = master.winfo_rooty() + (master.winfo_height() - win.winfo_height()) // 3
+    win.geometry("+%d+%d" % (max(x, 0), max(y, 0)))
+    track_titlebar(win)
+    win.deiconify()
 
 
 def resource(name):
@@ -145,8 +201,11 @@ def circle_image(path, size, name, color):
 
 # ---------------------------------------------------------------- 弹窗（统一风格）
 class Dialog(ctk.CTkToplevel):
+    _deactivate_windows_window_header_manipulation = True
+
     def __init__(self, master, title, msg, yes="确定", no=None):
         super().__init__(master)
+        self.withdraw()
         self.result = False
         self.title(title)
         self.configure(fg_color=BG)
@@ -164,16 +223,13 @@ class Dialog(ctk.CTkToplevel):
         row = ctk.CTkFrame(box, fg_color="transparent")
         row.pack(anchor="e", padx=22, pady=(0, 18))
         if no:
-            ctk.CTkButton(row, text=no, width=90, height=34, corner_radius=10, fg_color=BTN2, text_color=FG,
+            ctk.CTkButton(row, text=no, width=90, height=36, corner_radius=18, fg_color=BTN2, text_color=FG,
                           hover_color=BTN2_HOVER, font=F(13), command=lambda: self._done(False)).pack(side="left", padx=6)
-        ctk.CTkButton(row, text=yes, width=110, height=34, corner_radius=10, fg_color=PRIMARY,
+        ctk.CTkButton(row, text=yes, width=110, height=36, corner_radius=18, fg_color=PRIMARY,
                       hover_color=PRIMARY_HOVER, text_color=ON_PRIMARY, font=F(13, True),
                       command=lambda: self._done(True)).pack(side="left")
         self.protocol("WM_DELETE_WINDOW", lambda: self._done(False))
-        self.update_idletasks()
-        x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
-        y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 3
-        self.geometry("+%d+%d" % (max(x, 0), max(y, 0)))
+        center_show(self, master)
         self.after(100, self.grab_set)
 
     def _done(self, v):
@@ -205,11 +261,11 @@ class Card(ctk.CTkFrame):
         self.avatar.pack(side="left", padx=(12, 10), pady=12)
         btns = ctk.CTkFrame(self, fg_color="transparent")
         btns.pack(side="right", padx=10)
-        self.play_btn = ctk.CTkButton(btns, text="▶", width=34, height=34, corner_radius=17, border_spacing=0, font=F(13),
-                                      fg_color=col, hover_color=col, text_color="#FFFFFF" if THEME == "light" else "#1A1A1A",
+        self.play_btn = ctk.CTkButton(btns, text="▶", width=46, height=34, corner_radius=17, border_spacing=0, font=F(13),
+                                      fg_color=col, hover_color=col, text_color=ON_PRIMARY,
                                       command=lambda: app.play_item(item))
         self.play_btn.pack(side="left", padx=3)
-        self.fav_btn = ctk.CTkButton(btns, text="", width=34, height=34, corner_radius=17, border_spacing=0, font=F(15),
+        self.fav_btn = ctk.CTkButton(btns, text="", width=46, height=34, corner_radius=17, border_spacing=0, font=F(15),
                                      fg_color=BTN2, hover_color=BTN2_HOVER, text_color=FG,
                                      command=self._fav_click)
         self.fav_btn.pack(side="left", padx=3)
@@ -222,17 +278,34 @@ class Card(ctk.CTkFrame):
         r2 = ctk.CTkFrame(mid, fg_color="transparent")
         r2.pack(fill="x", anchor="w", pady=(2, 0))
         # 平台胶囊：搜索卡放在名字右侧；窄的收藏卡放在第二行最前，避免被挤出
-        ctk.CTkLabel(r2 if fav_mode else r1, text=core.PLATFORMS[item["platform"]], font=F(10, True),
-                     text_color=PILL_FG[item["platform"]], fg_color=PILL_BG[item["platform"]], corner_radius=9, height=18, width=46
-                     ).pack(side="left", padx=(0, 8) if fav_mode else 8)
+        self.pill = ctk.CTkLabel(r2 if fav_mode else r1, text=core.PLATFORMS[item["platform"]], font=F(10, True),
+                                 text_color=PILL_FG[item["platform"]], fg_color=PILL_BG[item["platform"]], corner_radius=9,
+                                 height=18, width=46)
+        self.pill.pack(side="left", padx=(0, 6) if fav_mode else 8)
         self.live_lbl = ctk.CTkLabel(r2, text="", font=F(11), anchor="w")
         self.live_lbl.pack(side="left")
         self.sub_lbl = ctk.CTkLabel(r2, text="", font=F(11), text_color=FG2, anchor="w")
         self.sub_lbl.pack(side="left", padx=(8, 0))
         self.refresh()
+        self._narrow = False
+        if fav_mode:
+            self.bind("<Configure>", self._fit, add="+")
         self._bind_all(self)
         if item.get("avatar"):
             app.load_avatar(item, self)
+
+    def _fit(self, e):
+        """收藏卡太窄（小窗口）时收起房间号和平台胶囊（头像颜色已区分平台），保证直播状态完整可见。"""
+        narrow = e.width < 310
+        if narrow != self._narrow:
+            self._narrow = narrow
+            if narrow:
+                self.pill.pack_forget()
+                self.sub_lbl.pack_forget()
+            else:
+                self.pill.pack(side="left", padx=(0, 6), before=self.live_lbl)
+                self.sub_lbl.pack(side="left", padx=(8, 0))
+            self.name_lbl.configure(text=self._short(self.item["name"], 6 if narrow else 9))
 
     @staticmethod
     def _short(s, n):
@@ -241,7 +314,7 @@ class Card(ctk.CTkFrame):
     def refresh(self):
         it = self.item
         if it.get("live"):
-            self.live_lbl.configure(text="● 直播中", text_color=LIVE_RED)
+            self.live_lbl.configure(text="● 直播" if self.fav_mode else "● 直播中", text_color=LIVE_RED)
         else:
             self.live_lbl.configure(text="未开播", text_color=FG2)
         bits = [it["rid"]]
@@ -249,7 +322,9 @@ class Card(ctk.CTkFrame):
             bits.append(it["cate"])
         if it.get("hot"):
             bits.append("人气 " + str(it["hot"]))
-        self.sub_lbl.configure(text=self._short("  ·  ".join(bits), 10 if self.fav_mode else 34))
+        if self.fav_mode:
+            bits = bits[:1]          # 收藏栏窄，只显示房间号，避免 "·" 被截断在行尾
+        self.sub_lbl.configure(text=self._short("  ·  ".join(bits), 12 if self.fav_mode else 34))
         faved = self.app.is_fav(it)
         if self.fav_mode:
             self.fav_btn.configure(text="✕")
@@ -297,8 +372,11 @@ class Card(ctk.CTkFrame):
 
 # ---------------------------------------------------------------- 弹幕设置
 class DanmakuSettings(ctk.CTkToplevel):
+    _deactivate_windows_window_header_manipulation = True
+
     def __init__(self, app, cfg, dm, hotkey_ok):
         super().__init__(app)
+        self.withdraw()
         self.cfg, self.dm = cfg, dm
         self.title("弹幕设置")
         self.configure(fg_color=BG)
@@ -323,7 +401,7 @@ class DanmakuSettings(ctk.CTkToplevel):
                 cfg[key] = round(float(v), 2) if key == "dm_alpha" else int(round(v))
                 lb.configure(text=fmt(cfg[key]))
                 dm.apply_settings()
-            sl = ctk.CTkSlider(box, from_=lo, to=hi, number_of_steps=steps, width=190, progress_color=PRIMARY,
+            sl = ctk.CTkSlider(box, from_=lo, to=hi, number_of_steps=steps, width=190, fg_color=TRACK, progress_color=PRIMARY,
                                button_color=PRIMARY, button_hover_color=PRIMARY_HOVER, command=on)
             sl.set(cfg[key])
             sl.grid(row=row, column=1, pady=6)
@@ -332,14 +410,14 @@ class DanmakuSettings(ctk.CTkToplevel):
         slider(3, "飘过时间", "dm_speed", 4, 16, 12, lambda v: "%d 秒" % v)
         slider(4, "同屏最多", "dm_max", 20, 150, 13, lambda v: "%d 条" % v)
         ctk.CTkLabel(box, text="显示区域", font=F(13), text_color=FG2).grid(row=5, column=0, sticky="w", padx=(22, 10), pady=6)
-        self.area = ctk.CTkOptionMenu(box, values=danmaku.AREAS, width=190, height=32, corner_radius=10, font=F(13),
+        self.area = ctk.CTkOptionMenu(box, values=danmaku.AREAS, width=190, height=34, corner_radius=17, font=F(13),
                                       dropdown_font=F(13), fg_color=BTN2, text_color=FG, button_color=BTN2_HOVER,
                                       button_hover_color=BTN2_HOVER, dropdown_fg_color=CARD, dropdown_text_color=FG,
                                       dropdown_hover_color=CARD_HOVER, command=self._area)
         self.area.set(cfg.get("dm_area", "上半屏"))
         self.area.grid(row=5, column=1, columnspan=2, sticky="w", pady=6)
         ctk.CTkLabel(box, text="渲染方式", font=F(13), text_color=FG2).grid(row=6, column=0, sticky="w", padx=(22, 10), pady=6)
-        self.rend = ctk.CTkOptionMenu(box, values=danmaku.RENDERERS, width=190, height=32, corner_radius=10, font=F(13),
+        self.rend = ctk.CTkOptionMenu(box, values=danmaku.RENDERERS, width=190, height=34, corner_radius=17, font=F(13),
                                       dropdown_font=F(13), fg_color=BTN2, text_color=FG, button_color=BTN2_HOVER,
                                       button_hover_color=BTN2_HOVER, dropdown_fg_color=CARD, dropdown_text_color=FG,
                                       dropdown_hover_color=CARD_HOVER, command=self._renderer)
@@ -350,13 +428,10 @@ class DanmakuSettings(ctk.CTkToplevel):
                "若 PotPlayer 设为“独占全屏”（Exclusive），弹幕可能被挡住看不到。\n弹幕显示异常（重影、不显示）时，把“渲染方式”切到“兼容（旧）”。")
         ctk.CTkLabel(box, text=tip, font=F(12), text_color=FG2, justify="left", wraplength=400).grid(
             row=7, column=0, columnspan=3, sticky="w", padx=22, pady=(10, 6))
-        ctk.CTkButton(box, text="完成", width=100, height=34, corner_radius=10, fg_color=PRIMARY,
+        ctk.CTkButton(box, text="完成", width=100, height=36, corner_radius=18, fg_color=PRIMARY,
                       hover_color=PRIMARY_HOVER, text_color=ON_PRIMARY, font=F(13, True),
                       command=self.destroy).grid(row=8, column=0, columnspan=3, sticky="e", padx=22, pady=(6, 18))
-        self.update_idletasks()
-        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
-        y = app.winfo_rooty() + (app.winfo_height() - self.winfo_height()) // 3
-        self.geometry("+%d+%d" % (max(x, 0), max(y, 0)))
+        center_show(self, app)
 
     def _area(self, v):
         self.cfg["dm_area"] = v
@@ -368,9 +443,12 @@ class DanmakuSettings(ctk.CTkToplevel):
 
 # ---------------------------------------------------------------- 主窗口
 class App(ctk.CTk):
+    _deactivate_windows_window_header_manipulation = True
+
     def __init__(self):
         apply_theme(core.load_config().get("theme", "light"))
         super().__init__(fg_color=BG)
+        self.withdraw()          # 先隐藏建好界面，最后一次性显示（含深/浅标题栏），启动不闪
         self.title("直播助手 v%s" % __version__)
         try:
             self.iconbitmap(resource("icon.ico"))
@@ -401,6 +479,9 @@ class App(ctk.CTk):
         self.after(300, self.check_potplayer)
         self.after(600, self.refresh_fav_status)
         self.show_hint(self.res_box, "输入主播名字回车搜索，或粘贴房间链接/房间号")
+        self.update_idletasks()
+        track_titlebar(self)
+        self.deiconify()
 
     # ------------------------------------------------------------ 界面
     def _build(self):
@@ -433,6 +514,7 @@ class App(ctk.CTk):
             self.pbtn[k] = b
             self._style_pill(k)
         self.theme_sw = ctk.CTkSwitch(pills, text="深色", font=F(12), text_color=FG2, width=70,
+                                      fg_color=TRACK, button_color=KNOB, button_hover_color=KNOB,
                                       progress_color=PRIMARY, command=self.switch_theme)
         if THEME == "dark":
             self.theme_sw.select()
@@ -449,76 +531,70 @@ class App(ctk.CTk):
         right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         self.res_title = ctk.CTkLabel(left, text="搜索结果", font=F(14, True), text_color=FG, anchor="w")
         self.res_title.pack(fill="x", pady=(0, 6))
-        self.res_box = ctk.CTkScrollableFrame(left, fg_color="transparent", corner_radius=0)
+        self.res_box = ctk.CTkScrollableFrame(left, fg_color="transparent", corner_radius=0, scrollbar_button_color=SCROLL,
+                                              scrollbar_button_hover_color=SCROLL_HOVER)
         self.res_box.pack(fill="both", expand=True)
         hd = ctk.CTkFrame(right, fg_color="transparent")
         hd.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(hd, text="我的收藏", font=F(14, True), text_color=FG).pack(side="left")
         ctk.CTkButton(hd, text="刷新状态", width=70, height=24, corner_radius=12, font=F(11), fg_color=BTN2,
                       hover_color=BTN2_HOVER, text_color=FG2, command=self.refresh_fav_status).pack(side="right")
-        self.fav_box = ctk.CTkScrollableFrame(right, fg_color="transparent", corner_radius=0)
+        self.fav_box = ctk.CTkScrollableFrame(right, fg_color="transparent", corner_radius=0, scrollbar_button_color=SCROLL,
+                                              scrollbar_button_hover_color=SCROLL_HOVER)
         self.fav_box.pack(fill="both", expand=True)
         self.rebuild_favs()
 
         pb = ctk.CTkFrame(self, fg_color=CARD, corner_radius=0, height=76, border_width=0)
         pb.pack(fill="x", side="bottom", pady=(10, 0))
         pb.pack_propagate(False)
-        ctk.CTkLabel(pb, text="画质", font=F(12), text_color=FG2).pack(side="left", padx=(22, 6))
-        self.quality = ctk.CTkOptionMenu(pb, values=core.QUALITIES, width=170, height=34, corner_radius=10,
+        ctk.CTkLabel(pb, text="画质", font=F(12), text_color=FG2).pack(side="left", padx=(20, 6))
+        self.quality = ctk.CTkOptionMenu(pb, values=core.QUALITIES, width=146, height=34, corner_radius=17,
                                          font=F(13), dropdown_font=F(13), fg_color=BTN2, text_color=FG, button_color=BTN2_HOVER, button_hover_color=BTN2_HOVER,
                                          dropdown_fg_color=CARD, dropdown_text_color=FG, dropdown_hover_color=CARD_HOVER)
         q0 = self.cfg.get("quality")
         self.quality.set(core.DEFAULT_QUALITY)
         self.quality.pack(side="left")
-        self.btn_play = ctk.CTkButton(pb, text="▶  播放", width=130, height=44, corner_radius=22, font=F(16, True),
+        self.btn_play = ctk.CTkButton(pb, text="▶  播放", width=120, height=44, corner_radius=22, font=F(16, True),
                                       fg_color=PRIMARY, hover_color=PRIMARY_HOVER, text_color=ON_PRIMARY,
                                       command=self.play_selected)
-        self.btn_play.pack(side="left", padx=18)
+        self.btn_play.pack(side="left", padx=14)
         self.btn_stop = ctk.CTkButton(pb, text="停止", width=64, height=34, corner_radius=17, font=F(13),
                                       fg_color=BTN2, hover_color=BTN2_HOVER, text_color=FG, state="disabled",
                                       command=self.stop_play)
         self.btn_stop.pack(side="left")
-        self.dm_sw = ctk.CTkSwitch(pb, text="弹幕", font=F(13), text_color=FG, width=64, progress_color=PRIMARY,
+        self.dm_sw = ctk.CTkSwitch(pb, text="弹幕", font=F(13), text_color=FG, width=64, fg_color=TRACK,
+                                   button_color=KNOB, button_hover_color=KNOB, progress_color=PRIMARY,
                                    command=self.on_danmaku_switch)
         if self.cfg.get("danmaku_on"):
             self.dm_sw.select()
-        self.dm_sw.pack(side="left", padx=(18, 0))
+        self.dm_sw.pack(side="left", padx=(14, 0))
         ctk.CTkButton(pb, text="⚙", width=30, height=28, corner_radius=14, font=F(13), fg_color=BTN2,
                       hover_color=BTN2_HOVER, text_color=FG2, command=self.open_danmaku_settings
                       ).pack(side="left", padx=(6, 0))
-        ctk.CTkButton(pb, text="PotPlayer 路径", width=100, height=28, corner_radius=14, font=F(11),
+        ctk.CTkButton(pb, text="PotPlayer 路径", width=94, height=28, corner_radius=14, font=F(11),
                       fg_color=BTN2, hover_color=BTN2_HOVER, text_color=FG2,
                       command=self.pick_potplayer).pack(side="right", padx=(4, 20))
-        ctk.CTkButton(pb, text="重新检测", width=76, height=28, corner_radius=14, font=F(11),
+        ctk.CTkButton(pb, text="重新检测", width=68, height=28, corner_radius=14, font=F(11),
                       fg_color=BTN2, hover_color=BTN2_HOVER, text_color=FG2,
                       command=self.check_potplayer).pack(side="right")
         self.status = ctk.CTkLabel(pb, text="就绪", font=F(12), text_color=FG2, anchor="w", width=10)
-        self.status.pack(side="left", fill="x", expand=True, padx=16)
+        self.status.pack(side="left", fill="x", expand=True, padx=12)
 
     def switch_theme(self):
-        """切换浅/深色：保存选择，销毁并重建整个界面（状态保留在 self 里）。"""
+        """切换浅/深色：只切 appearance mode，控件按 (浅, 深) 元组颜色就地重绘，不销毁重建，状态天然保留。"""
         self.cfg["quality"] = self.quality.get() or core.DEFAULT_QUALITY
         self.cfg["theme"] = "dark" if self.theme_sw.get() else "light"
         core.save_config(self.cfg)
-        apply_theme(self.cfg["theme"])
-        txt = self.kw.get()
-        playing = self.proc is not None
-        self.configure(fg_color=BG)
-        for c in self.winfo_children():
-            c.destroy()
-        self.pbtn = {}
-        self.cards, self.fav_cards, self.selected_card = [], [], None
-        self._build()
-        if txt:
-            self.kw.insert(0, txt)
-        if playing:
-            self.btn_stop.configure(state="normal")
-        if self.results:
-            self.render_results()
-            self.res_title.configure(text="搜索结果（%d）" % len(self.results))
-        else:
-            self.show_hint(self.res_box, "输入主播名字回车搜索，或粘贴房间链接/房间号")
-        self.set_status("已切换为%s主题" % ("深色" if THEME == "dark" else "浅色"))
+        hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+        ctypes.windll.user32.LockWindowUpdate(hwnd)      # 冻结屏幕刷新：先在后台把所有控件重绘完，再一次性放出
+        try:
+            apply_theme(self.cfg["theme"])
+            retitle_all()
+            self.set_status("已切换为%s主题" % ("深色" if THEME == "dark" else "浅色"))
+            self.update_idletasks()
+        finally:
+            ctypes.windll.user32.LockWindowUpdate(0)
+        ctypes.windll.user32.RedrawWindow(hwnd, None, None, 0x0001 | 0x0004 | 0x0080 | 0x0100)  # INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW
 
     def _style_pill(self, k):
         on = self.pstate[k]
