@@ -1047,6 +1047,7 @@ class LayeredOverlay:
         self._shown = False
         self._topmost = None
         self._seq = -1
+        self._zt = 0.0          # 上次检查“是否仍紧贴在播放器上方”的时间
         self._lane_last = {}
         self._last_lane = -1
         self._held = None
@@ -1221,6 +1222,12 @@ class LayeredOverlay:
         if want["seq"] != self._seq:
             self._seq = want["seq"]
             self._zorder(want["above"], want["topmost"])
+            self._zt = t0
+        elif not want["topmost"] and want["above"] is not None and t0 - self._zt >= 0.25:
+            # 播放器事后把自己提到最上面（刚打开视频、被点击激活）会把悬浮层压在下面，而期望状态没变就不会重排；
+            # 所以非置顶时每 0.25 秒复查一次，已经紧贴在上方则什么都不做（_zorder 里只是一次 GetWindow 比较）
+            self._zt = t0
+            self._zorder(want["above"], False)
         canvas, clock = self._canvas, self._clock
         lanes = max(1, int(H * frac // self.line_h))
         # 1) 擦掉上一帧画的
