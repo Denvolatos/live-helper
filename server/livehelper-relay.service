@@ -1,0 +1,22 @@
+[Unit]
+Description=LiveHelper match data relay (PandaScore cache)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/livehelper-relay/matches_relay.py
+EnvironmentFile=/etc/livehelper/relay.env
+Environment=STATE_DIR=/var/lib/livehelper
+Restart=always
+RestartSec=10
+DynamicUser=yes
+StateDirectory=livehelper
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target
