@@ -8,7 +8,7 @@
 
 虎牙 / 斗鱼 / B 站，一个小工具搞定
 
-![version](https://img.shields.io/badge/version-v1.1.4-FF7A00)
+[![version](https://img.shields.io/github/v/release/Denvolatos/live-helper?color=FF7A00&label=version)](../../releases/latest)
 ![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![python](https://img.shields.io/badge/python-3.12-3776AB)
