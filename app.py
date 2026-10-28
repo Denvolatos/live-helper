@@ -124,6 +124,7 @@ from PIL import Image, ImageDraw
 
 import core
 import danmaku
+import matches
 import sysset
 import updater
 
@@ -923,6 +924,7 @@ class App(ctk.CTk):
         if self.cfg["fav_refresh_on_start"]:
             self.after(600, self.refresh_fav_status)
         self.after(30000, self._fav_tick)
+        self.after(60000, self._match_tick)
         updater.LOG_PATH = os.path.join(core.APPDIR, "update.log")
         self.after(4000, self.auto_check_update)       # 启动几秒后后台检查，不阻塞界面
         self.show_hint(self.res_box, "输入主播名字回车搜索，或粘贴房间链接/房间号")
@@ -975,9 +977,19 @@ class App(ctk.CTk):
 
         pills = ctk.CTkFrame(top, fg_color="transparent")
         pills.pack(fill="x", pady=(10, 0))
-        ctk.CTkLabel(pills, text="平台", font=F(12), text_color=FG2).pack(side="left", padx=(4, 8))
+        self.pills = pills
+        self.view = "live"
+        self.view_btns = {}
+        for key, text in (("live", "直播"), ("matches", "赛事")):
+            vb = ctk.CTkButton(pills, text=text, width=64, height=28, corner_radius=14, font=F(12, True),
+                               command=lambda k=key: self.show_view(k))
+            vb.pack(side="left", padx=(0, 4))
+            self.view_btns[key] = vb
+        self.plat_frame = ctk.CTkFrame(pills, fg_color="transparent")
+        self.plat_frame.pack(side="left", padx=(12, 0))
+        ctk.CTkLabel(self.plat_frame, text="平台", font=F(12), text_color=FG2).pack(side="left", padx=(4, 8))
         for k, name in core.PLATFORMS.items():
-            b = ctk.CTkButton(pills, text=name, width=64, height=28, corner_radius=14, font=F(12, True),
+            b = ctk.CTkButton(self.plat_frame, text=name, width=64, height=28, corner_radius=14, font=F(12, True),
                               command=lambda k=k: self.toggle_platform(k))
             b.pack(side="left", padx=4)
             self.pbtn[k] = b
@@ -1012,10 +1024,14 @@ class App(ctk.CTk):
                                               scrollbar_button_hover_color=SCROLL_HOVER)
         self.fav_box.pack(fill="both", expand=True)
         self.rebuild_favs()
+        self.body = body
 
         pb = ctk.CTkFrame(self, fg_color=CARD, corner_radius=0, height=76, border_width=0)
         pb.pack(fill="x", side="bottom", pady=(10, 0))
         pb.pack_propagate(False)
+        self._pb = pb
+        self._build_match_view()
+        self._style_view_btns()
         ctk.CTkButton(pb, text="⚙ 设置", width=76, height=30, corner_radius=15, font=F(12), fg_color=BTN2,
                       hover_color=BTN2_HOVER, text_color=FG2, command=self.open_settings).pack(side="left", padx=(20, 4))
         ctk.CTkLabel(pb, text="画质", font=F(12), text_color=FG2).pack(side="left", padx=(12, 6))
@@ -1215,6 +1231,154 @@ class App(ctk.CTk):
     def toggle_platform(self, k):
         self.pstate[k] = not self.pstate[k]
         self._style_pill(k)
+
+    # ------------------------------------------------------------ 赛事页（数据来自我们自己的服务器，见 matches.py）
+    def _style_view_btns(self):
+        for k, b in self.view_btns.items():
+            on = k == self.view
+            b.configure(fg_color=PRIMARY if on else BTN2, hover_color=PRIMARY_HOVER if on else BTN2_HOVER,
+                        text_color=ON_PRIMARY if on else FG2)
+
+    def _style_game_btns(self):
+        for g, b in self.game_btns.items():
+            on = g == self.game
+            b.configure(fg_color=PILL_BG["huya"] if on else CARD, hover_color=PILL_BG["huya"] if on else CARD_HOVER,
+                        text_color=PILL_FG["huya"] if on else FG2, border_width=1, border_color=PCOL["huya"] if on else BORDER)
+
+    def _build_match_view(self):
+        self.match_view = mv = ctk.CTkFrame(self, fg_color="transparent")
+        hd = ctk.CTkFrame(mv, fg_color="transparent")
+        hd.pack(fill="x", pady=(0, 6))
+        self.game_btns = {}
+        g0 = self.cfg.get("match_game")
+        self.game = g0 if g0 in matches.GAME_IDS else matches.GAME_IDS[0]
+        for g, name in matches.GAMES:
+            b = ctk.CTkButton(hd, text=name, width=64, height=30, corner_radius=15, font=F(13, True),
+                              command=lambda g=g: self.set_game(g))
+            b.pack(side="left", padx=(0, 6))
+            self.game_btns[g] = b
+        ctk.CTkButton(hd, text="刷新", width=60, height=26, corner_radius=13, font=F(11), fg_color=BTN2,
+                      hover_color=BTN2_HOVER, text_color=FG2, command=lambda: self.refresh_matches(True)).pack(side="right")
+        self.match_status = ctk.CTkLabel(hd, text="", font=F(11), text_color=FG2)
+        self.match_status.pack(side="right", padx=10)
+        self.match_box = ctk.CTkScrollableFrame(mv, fg_color="transparent", corner_radius=0, scrollbar_button_color=SCROLL,
+                                                scrollbar_button_hover_color=SCROLL_HOVER)
+        self.match_box.pack(fill="both", expand=True)
+        self.match_data = matches.load_cache()
+        self.match_err = {}
+        self._match_busy, self._match_last = {}, {}
+        self._style_game_btns()
+
+    def show_view(self, name):
+        """在“直播”（搜索+收藏）和“赛事”两个页面之间切换；底部播放栏两边都在。"""
+        self.view = name
+        self._style_view_btns()
+        if name == "live":
+            self.match_view.pack_forget()
+            self.bar.pack(fill="x", before=self.pills)
+            self.plat_frame.pack(side="left", padx=(12, 0))
+            self.body.pack(fill="both", expand=True, padx=20, pady=(4, 0), before=self._pb)
+        else:
+            self.body.pack_forget()
+            self.bar.pack_forget()
+            self.plat_frame.pack_forget()
+            self.match_view.pack(fill="both", expand=True, padx=20, pady=(4, 0), before=self._pb)
+            self.refresh_matches()
+
+    def set_game(self, g):
+        if g not in matches.GAME_IDS:
+            return
+        self.game = g
+        self.cfg["match_game"] = g
+        core.save_config(self.cfg)
+        self._style_game_btns()
+        self.refresh_matches()
+
+    def refresh_matches(self, force=False):
+        """先用已有数据立刻显示，再在后台取最新的；同一款游戏 30 秒内不重复取（手动刷新除外）。"""
+        g = self.game
+        self.render_matches()
+        if self._match_busy.get(g) or (not force and time.time() - self._match_last.get(g, 0) < 30):
+            return
+        self._match_busy[g] = True
+        self.match_status.configure(text="更新中…", text_color=FG2)
+        base = self.cfg.get("match_api") or matches.DEFAULT_API
+
+        def work():
+            try:
+                data, err = matches.fetch_game(g, base), None
+            except matches.MatchError as e:
+                data, err = None, str(e)
+            except Exception:
+                data, err = None, "读取赛事出错了"
+
+            def done():
+                self._match_busy[g] = False
+                if data is not None:
+                    self.match_data[g] = data
+                    self._match_last[g] = time.time()
+                    self.match_err.pop(g, None)
+                    matches.save_cache(self.match_data)
+                else:
+                    self.match_err[g] = err
+                if self.view == "matches" and self.game == g:
+                    self.render_matches()
+            self.post(done)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _match_tick(self):
+        if self.view == "matches" and self.state() == "normal":
+            self.refresh_matches(True)
+        self.after(60000, self._match_tick)
+
+    def render_matches(self):
+        g = self.game
+        data, err = self.match_data.get(g), self.match_err.get(g)
+        for c in self.match_box.winfo_children():
+            c.destroy()
+        if err:
+            self.match_status.configure(text=err + ("，显示的是上次的数据" if data else ""), text_color=LIVE_RED)
+        else:
+            self.match_status.configure(text=matches.age_text((data or {}).get("fetched_at")), text_color=FG2)
+        secs = matches.sections(data)
+        if not secs:
+            self.show_hint(self.match_box, "暂时没有比赛信息" if data else ("读取中…" if self._match_busy.get(g) else "还没有赛事数据，点右上角“刷新”试试"))
+            return
+        for title, items in secs:
+            ctk.CTkLabel(self.match_box, text="%s（%d）" % (title, len(items)), font=F(13, True), text_color=FG,
+                         anchor="w").pack(fill="x", pady=(10, 4), padx=2)
+            for m in items:
+                self._match_card(self.match_box, m).pack(fill="x", pady=3, padx=2)
+
+    def _match_card(self, parent, m):
+        card = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=12, height=72, border_width=1, border_color=BORDER)
+        card.pack_propagate(False)
+        tm, day = matches.when(m["scheduled_at"] or m["begin_at"])
+        left = ctk.CTkFrame(card, fg_color="transparent", width=92)
+        left.pack(side="left", fill="y", padx=(14, 6), pady=2)
+        left.pack_propagate(False)
+        ctk.CTkLabel(left, text=tm, font=F(18, True), text_color=FG, anchor="w").pack(anchor="w", pady=(13, 0))
+        ctk.CTkLabel(left, text=day, font=F(11), text_color=FG2, anchor="w").pack(anchor="w")
+        right = ctk.CTkFrame(card, fg_color="transparent", width=104)
+        right.pack(side="right", fill="y", padx=(6, 14), pady=2)
+        right.pack_propagate(False)
+        live = m["status"] == "running"
+        ctk.CTkLabel(right, text=("● " if live else "") + matches.status_text(m), font=F(12, live),
+                     text_color=LIVE_RED if live else FG2, anchor="e").pack(anchor="e", pady=(13, 0))
+        sc = matches.score_text(m)
+        if sc:
+            ctk.CTkLabel(right, text=sc, font=F(15, True), text_color=FG, anchor="e").pack(anchor="e")
+        mid = ctk.CTkFrame(card, fg_color="transparent")
+        mid.pack(side="left", fill="both", expand=True, pady=2)
+        names, win = matches.team_names(m), matches.winner_index(m)
+        row = ctk.CTkFrame(mid, fg_color="transparent")
+        row.pack(fill="x", pady=(13, 0))
+        for i, nm in enumerate(names):
+            if i:
+                ctk.CTkLabel(row, text="vs", font=F(11), text_color=FG2).pack(side="left", padx=8)
+            ctk.CTkLabel(row, text=nm, font=F(14, True), text_color=PRIMARY if win == i else FG).pack(side="left")
+        ctk.CTkLabel(mid, text=matches.info_line(m), font=F(11), text_color=FG2, anchor="w").pack(fill="x", pady=(2, 0))
+        return card
 
     # ------------------------------------------------------------ 线程 -> 界面
     def _pump(self):
