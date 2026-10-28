@@ -38,7 +38,7 @@
 - 💬 **弹幕悬浮层**：透明、置顶、点击穿透，跟随 PotPlayer 窗口；播放栏有开关，全局快捷键 `Ctrl+Alt+D`；字号 / 透明度 / 飘过时间 / 显示区域 / 同屏上限可调
 - 🧰 **PotPlayer 检测**：启动时自动查找；没找到时征得同意后用 winget 安装，也可在 设置 → 播放 里手动指定路径、重新检测
 - 🌗 **浅色 / 深色主题**：切换时界面就地换色，不闪黑
-- ⚙️ **设置**（v1.3.0 起，播放栏左下角）：开机自启（可只在托盘待命）、关闭时最小化到托盘、记住窗口位置、默认搜索平台、收藏自动刷新、睡眠定时、清理缓存、备份导入导出、恢复默认
+- ⚙️ **设置**（v1.3.0 起，播放栏左下角）：开机自启（可只在托盘待命）、关闭时最小化到托盘、记住窗口位置、默认搜索平台、收藏自动刷新、睡眠定时、清理缓存、备份导入导出、恢复默认（开机自启仅安装版可用）
 - 🔔 **应用内更新**（v1.2.0 起）：启动时后台检查本仓库的最新 Release（每天最多一次，设置里可关，也可手动检查）；发现新版本只在主窗口顶部显示一条横幅，**不弹窗**。点"立即更新"并确认后才下载安装包，校验 SHA256 一致才启动安装程序。**v1.1.x 用户需要先手动安装一次 v1.2.0，之后才有这个功能。**
 
 <details>
@@ -54,10 +54,11 @@
 
 | 文件 | 说明 |
 |---|---|
-| `LiveHelper-Setup-vX.Y.Z.exe` | 安装包，双击安装，创建桌面快捷方式，可在"设置 → 应用"卸载 |
+| `LiveHelper-Setup-vX.Y.Z.exe` | 安装包，双击安装，创建桌面快捷方式，可在 Windows 的"设置 → 应用"里卸载 |
 | `LiveHelper-vX.Y.Z-win64.zip` | 免安装文件夹版，解压后运行 `LiveHelper.exe` |
-| `THIRD_PARTY_NOTICES.md` | 第三方组件的许可证声明（安装包和 zip 里也带有，另附 `LICENSE`） |
 | `SHA256SUMS.txt` | 校验值，用 `Get-FileHash <文件> -Algorithm SHA256` 对比 |
+
+第三方组件的许可证声明 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 在仓库根目录，安装包和 zip 里也带有（另附 `LICENSE`）；Release 页面本身不单独附这个文件。
 
 **系统要求**：Windows（作者在 Windows 11 上开发和测试，Windows 10 未验证）；需要 [PotPlayer](https://potplayer.daum.net/)（没有的话程序会询问是否用 winget 安装）。
 
@@ -77,12 +78,13 @@
 - **应用内更新的安全限制**：安装包和 `SHA256SUMS.txt` 来自同一个 Release，哈希校验只能防下载损坏，**防不了仓库或 Release 被入侵**；安装包没有代码签名，运行时 Windows 仍会提示未知发布者。下载只允许 `github.com/Denvolatos/live-helper/releases/download/` 及 GitHub 自家下载域，且必须你点击并确认，不会自动下载（详见 [docs/VERIFICATION.md](docs/VERIFICATION.md)）
 - 斗鱼搜索接口有风控，频繁搜索会提示"行为存在风险"，可改用房间号
 - 弹幕里的 emoji 表情会被去掉；等空行超过 2 秒的弹幕会被丢弃
+- **托盘和开机自启**：托盘图标在通知区的实际外观与右键菜单、重新登录后开机自启是否真的生效，还没有目视/实机验证（见 [docs/VERIFICATION.md](docs/VERIFICATION.md)）
 - 只做 Windows。高 DPI、多显示器、60Hz 显示器、别人的电脑、杀毒误报等未充分验证
 
 ## 🛠️ 从源码运行 / 构建
 
 ```bash
-pip install customtkinter streamlink requests pillow websocket-client brotli psutil
+pip install customtkinter streamlink requests pillow websocket-client brotli psutil pystray
 python app.py
 ```
 
@@ -94,6 +96,8 @@ python app.py
 app.py            界面与主程序（customtkinter）
 core.py           搜索、streamlink 解析与播放、画质、收藏、PotPlayer 检测
 danmaku.py        三平台弹幕客户端 + 悬浮层 + 跟随窗口 + 全局快捷键
+sysset.py         设置校验、开机自启、窗口位置记忆、备份导入导出、单实例、托盘
+updater.py        应用内更新（检查 Release、下载、SHA256 校验）
 version.py        版本号（唯一定义处）
 build.bat         PyInstaller 打包（见 docs/BUILD.md）
 LiveHelper.iss    Inno Setup 安装包脚本
@@ -101,9 +105,13 @@ LICENSE           本项目许可证（AGPL-3.0）
 THIRD_PARTY_NOTICES.md   第三方组件的版本、许可证与许可证全文
 make_icon.py / make_version.py   生成图标 / exe 版本信息
 test_*.py, bench_*.py, measure_motion.py   实测与性能脚本
-docs/             构建说明、弹幕协议笔记、验证状态
+docs/             构建说明、弹幕协议笔记、验证状态、路线图
 screenshots/      界面截图（均为假数据）
 ```
+
+## 🧭 路线图
+
+接下来的方向（v2.0 换成网页界面引擎、v3.0 内置播放器加弹幕、Mac 版的设想等）见 [docs/ROADMAP.md](docs/ROADMAP.md)。这是计划，不是承诺。
 
 ## 📝 更新日志
 
