@@ -38,7 +38,7 @@ core.save_favorites([dict(FAKE[0]), dict(FAKE[1])])
 import app
 app.App.refresh_qualities = lambda self, it: None
 app.App.refresh_fav_status = lambda self: None
-app.App.check_potplayer = lambda self: None
+app.App.check_potplayer = lambda self, prompt=True: None
 from PIL import Image, ImageGrab, ImageChops, ImageStat
 
 dwm = ctypes.windll.dwmapi

@@ -106,6 +106,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--streamlink-cli":
 if len(sys.argv) > 2 and sys.argv[1] == "--selftest":
     sys.exit(0 if _selftest(sys.argv[2]) else 1)
 
+import copy
 import queue
 import subprocess
 import ctypes
@@ -114,6 +115,7 @@ from version import __version__
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from tkinter import filedialog
 from concurrent.futures import ThreadPoolExecutor
 
@@ -122,6 +124,7 @@ from PIL import Image, ImageDraw
 
 import core
 import danmaku
+import sysset
 import updater
 
 # ---------------------------------------------------------------- 主题
@@ -428,15 +431,95 @@ def updater_text(r):
     return "检查失败：%s" % r.get("reason", "未知原因")
 
 
-# ---------------------------------------------------------------- 弹幕设置
-class DanmakuSettings(ctk.CTkToplevel):
+# ---------------------------------------------------------------- 选择弹窗（多个按钮 + 可选“记住我的选择”）
+class Choice(ctk.CTkToplevel):
     _deactivate_windows_window_header_manipulation = True
 
-    def __init__(self, app, cfg, dm, hotkey_ok):
+    def __init__(self, master, title, msg, options, cancel, remember_text):
+        super().__init__(master)
+        self.withdraw()
+        self.value, self.remember = None, False
+        self.has_remember = bool(remember_text)
+        self.title(title)
+        self.configure(fg_color=BG)
+        self.resizable(False, False)
+        self.transient(master)
+        try:
+            self.iconbitmap(resource("icon.ico"))
+        except Exception:
+            pass
+        box = ctk.CTkFrame(self, fg_color=CARD, corner_radius=12, border_width=1, border_color=BORDER)
+        box.pack(padx=16, pady=16)
+        ctk.CTkLabel(box, text=title, font=F(16, True), text_color=FG).pack(anchor="w", padx=22, pady=(18, 4))
+        ctk.CTkLabel(box, text=msg, font=F(13), text_color=FG2, justify="left", wraplength=380).pack(
+            anchor="w", padx=22, pady=(0, 14))
+        if remember_text:
+            self.rem = ctk.CTkCheckBox(box, text=remember_text, font=F(12), text_color=FG2, checkbox_width=20,
+                                       checkbox_height=20, corner_radius=6, border_width=2, fg_color=PRIMARY,
+                                       hover_color=PRIMARY_HOVER, border_color=TRACK, checkmark_color=ON_PRIMARY)
+            self.rem.pack(anchor="w", padx=22, pady=(0, 14))
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(anchor="e", padx=22, pady=(0, 18))
+        ctk.CTkButton(row, text=cancel, width=80, height=36, corner_radius=18, fg_color=BTN2, text_color=FG,
+                      hover_color=BTN2_HOVER, font=F(13), command=lambda: self._done(None)).pack(side="left", padx=4)
+        for i, (text, val) in enumerate(options):
+            first = i == len(options) - 1      # 最右边的按钮是主按钮
+            ctk.CTkButton(row, text=text, width=110, height=36, corner_radius=18,
+                          fg_color=PRIMARY if first else BTN2, hover_color=PRIMARY_HOVER if first else BTN2_HOVER,
+                          text_color=ON_PRIMARY if first else FG, font=F(13, first),
+                          command=lambda v=val: self._done(v)).pack(side="left", padx=4)
+        self.protocol("WM_DELETE_WINDOW", lambda: self._done(None))
+        center_show(self, master)
+        self.after(100, self.grab_set)
+
+    def _done(self, v):
+        self.value = v
+        self.remember = bool(self.rem.get()) if self.has_remember else False
+        self.destroy()
+
+
+def choose(master, title, msg, options, cancel="取消", remember_text=None):
+    """多选一弹窗；返回 (所选的值，点了取消/关闭则为 None；是否勾选了“记住”)。options: [(按钮文字, 值), ...]"""
+    d = Choice(master, title, msg, options, cancel, remember_text)
+    master.wait_window(d)
+    return d.value, d.remember
+
+
+# ---------------------------------------------------------------- 设置
+SWITCH_STYLE = dict(fg_color=TRACK, button_color=KNOB, button_hover_color=KNOB, progress_color=PRIMARY)
+
+
+def _menu_style():
+    return dict(height=34, corner_radius=17, font=F(13), dropdown_font=F(13), fg_color=BTN2, text_color=FG,
+                button_color=BTN2_HOVER, button_hover_color=BTN2_HOVER, dropdown_fg_color=CARD,
+                dropdown_text_color=FG, dropdown_hover_color=CARD_HOVER)
+
+
+def _short_path(p, n=38):
+    """太长的路径保留盘符和最后两级目录：C:\\…\\PotPlayer\\PotPlayerMini64.exe"""
+    if len(p) <= n:
+        return p
+    parts = p.replace("/", "\\").split("\\")
+    short = parts[0] + "\\…\\" + "\\".join(parts[-2:]) if len(parts) > 3 else p
+    return short if len(short) <= n + 6 else "…" + p[-(n - 1):]
+
+
+class SettingsWindow(ctk.CTkToplevel):
+    """左边分类、右边内容；每个开关/选项一改就立即生效并保存，没有“确定/取消”。"""
+    _deactivate_windows_window_header_manipulation = True
+    PAGES = ("通用", "播放", "弹幕", "外观", "数据", "关于")
+    BUILDERS = {"通用": "_build_general", "播放": "_build_play", "弹幕": "_build_danmaku",
+                "外观": "_build_look", "数据": "_build_data", "关于": "_build_about"}
+    W, H = 540, 520
+
+    def __init__(self, app, page="通用"):
         super().__init__(app)
         self.withdraw()
-        self.cfg, self.dm, self.app = cfg, dm, app
-        self.title("弹幕设置")
+        self.app, self.cfg = app, app.cfg
+        self.current = None
+        self.pages, self.navs = {}, {}
+        self._reset_refs()
+        self.title("设置")
         self.configure(fg_color=BG)
         self.resizable(False, False)
         self.transient(app)
@@ -444,84 +527,327 @@ class DanmakuSettings(ctk.CTkToplevel):
             self.iconbitmap(resource("icon.ico"))
         except Exception:
             pass
-        box = ctk.CTkFrame(self, fg_color=CARD, corner_radius=12, border_width=1, border_color=BORDER)
-        box.pack(padx=16, pady=16)
-        ctk.CTkLabel(box, text="弹幕设置", font=F(16, True), text_color=FG).grid(
-            row=0, column=0, columnspan=3, sticky="w", padx=22, pady=(18, 10))
-        self.lbls = {}
+        shell = ctk.CTkFrame(self, fg_color="transparent")
+        shell.pack(padx=16, pady=16)
+        nav = ctk.CTkFrame(shell, fg_color=CARD, corner_radius=12, border_width=1, border_color=BORDER,
+                           width=130, height=self.H)
+        nav.grid(row=0, column=0, sticky="ns", padx=(0, 12))
+        nav.pack_propagate(False)
+        ctk.CTkLabel(nav, text="设置", font=F(16, True), text_color=FG, anchor="w").pack(fill="x", padx=18, pady=(18, 8))
+        for name in self.PAGES:
+            b = ctk.CTkButton(nav, text=name, anchor="w", height=36, corner_radius=10, font=F(13),
+                              fg_color="transparent", hover_color=BTN2, text_color=FG,
+                              command=lambda n=name: self.show_page(n))
+            b.pack(fill="x", padx=10, pady=2)
+            self.navs[name] = b
+        ctk.CTkButton(nav, text="完成", height=34, corner_radius=17, fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
+                      text_color=ON_PRIMARY, font=F(13, True), command=self.destroy).pack(side="bottom", fill="x", padx=14, pady=16)
+        self.body = ctk.CTkFrame(shell, fg_color=CARD, corner_radius=12, border_width=1, border_color=BORDER,
+                                 width=self.W, height=self.H)
+        self.body.grid(row=0, column=1)
+        self.body.pack_propagate(False)
+        self.show_page(page)
+        self.bind("<Escape>", lambda e: self.destroy())
+        center_show(self, app)
 
-        def slider(row, label, key, lo, hi, steps, fmt):
-            ctk.CTkLabel(box, text=label, font=F(13), text_color=FG2).grid(row=row, column=0, sticky="w", padx=(22, 10), pady=6)
-            lb = ctk.CTkLabel(box, text=fmt(cfg[key]), font=F(13), text_color=FG, width=56)
-            lb.grid(row=row, column=2, padx=(6, 22))
+    def _reset_refs(self):
+        self.player_lbl = self.upd_lbl = self.upd_btn = self.cache_lbl = self.theme_sw = None
+        self.autostart_sw = self.auto_desc = self.plat_desc = None
+        self.plat_cb = {}
+        self.switches, self.menus = {}, {}       # 按设置项名字记下各开关/下拉框，方便测试和批量同步
+
+    # ---- 页面切换 / 重建
+    def show_page(self, name):
+        if name not in self.PAGES:
+            name = self.PAGES[0]
+        if self.current in self.pages:
+            self.pages[self.current].pack_forget()
+        if name not in self.pages:
+            p = ctk.CTkFrame(self.body, fg_color="transparent")
+            ctk.CTkLabel(p, text=name, font=F(16, True), text_color=FG, anchor="w").pack(fill="x", padx=20, pady=(18, 4))
+            getattr(self, self.BUILDERS[name])(p)
+            self.pages[name] = p
+        self.pages[name].pack(fill="both", expand=True)
+        self.current = name
+        for n, b in self.navs.items():
+            on = n == name
+            b.configure(fg_color=CARD_SEL if on else "transparent", text_color=PRIMARY if on else FG, font=F(13, on))
+
+    def rebuild(self):
+        """设置被批量改动（导入备份 / 恢复默认）后，丢掉已建好的页面，按新值重新生成。"""
+        cur = self.current
+        for p in self.pages.values():
+            p.destroy()
+        self.pages.clear()
+        self._reset_refs()
+        self.current = None
+        self.show_page(cur or self.PAGES[0])
+
+    # ---- 小零件
+    def _row(self, p, title, desc=None, wrap=290):
+        """一行设置：左边标题+说明，右边放控件。返回 (右侧容器, 说明标签)。"""
+        n = getattr(p, "_nrows", 0)
+        if n:
+            ctk.CTkFrame(p, height=1, fg_color=BTN2, corner_radius=0).pack(fill="x", padx=20)
+        p._nrows = n + 1
+        row = ctk.CTkFrame(p, fg_color="transparent")
+        row.pack(fill="x", padx=20)
+        right = ctk.CTkFrame(row, fg_color="transparent")
+        right.pack(side="right", padx=(10, 0))
+        left = ctk.CTkFrame(row, fg_color="transparent")
+        left.pack(side="left", fill="x", expand=True, pady=9)
+        ctk.CTkLabel(left, text=title, font=F(13), text_color=FG, anchor="w").pack(fill="x")
+        lbl = None
+        if desc is not None:
+            lbl = ctk.CTkLabel(left, text=desc, font=F(11), text_color=FG2, anchor="w", justify="left", wraplength=wrap)
+            lbl.pack(fill="x", pady=(2, 0))
+        return right, lbl
+
+    def _btn(self, parent, text, cmd, width=88):
+        return ctk.CTkButton(parent, text=text, width=width, height=30, corner_radius=15, font=F(12),
+                             fg_color=BTN2, hover_color=BTN2_HOVER, text_color=FG, command=cmd)
+
+    def _set(self, key, val):
+        self.cfg[key] = val
+        core.save_config(self.cfg)
+
+    def _switch(self, right, key, command=None):
+        sw = ctk.CTkSwitch(right, text="", width=46, command=lambda: self._on_switch(key, sw, command), **SWITCH_STYLE)
+        if self.cfg.get(key, sysset.SETTING_DEFAULTS[key]):
+            sw.select()
+        sw.pack()
+        self.switches[key] = sw
+        return sw
+
+    def _on_switch(self, key, sw, command):
+        self._set(key, bool(sw.get()))
+        if command:
+            command()
+
+    def _menu(self, right, key, choices, command=None, width=150):
+        by_label = dict(choices)
+        by_value = {v: l for l, v in choices}
+        m = ctk.CTkOptionMenu(right, values=[l for l, _ in choices], width=width,
+                              command=lambda l: self._on_menu(key, by_label[l], command), **_menu_style())
+        m.set(by_value.get(self.cfg.get(key, sysset.SETTING_DEFAULTS[key]), choices[0][0]))
+        m.pack()
+        self.menus[key] = m
+        return m
+
+    def _on_menu(self, key, val, command):
+        self._set(key, val)
+        if command:
+            command(val)
+
+    # ---- 通用
+    def _build_general(self, p):
+        right, self.auto_desc = self._row(p, "开机自启", "登录 Windows 后自动运行直播助手")
+        self.autostart_sw = ctk.CTkSwitch(right, text="", width=46, command=self._autostart_toggle, **SWITCH_STYLE)
+        self.autostart_sw.pack()
+        self._autostart_sync()
+        right, _ = self._row(p, "开机自启后只在托盘待命", "不弹出主窗口；点托盘图标或再次打开程序即可显示")
+        self._switch(right, "start_minimized")
+        right, _ = self._row(p, "点窗口右上角 ✕ 时")
+        self._menu(right, "close_action", sysset.CLOSE_ACTIONS)
+        right, _ = self._row(p, "记住窗口大小和位置")
+        self._switch(right, "remember_window")
+        right, self.plat_desc = self._row(p, "默认搜索的平台", "搜索栏下方的平台按钮按这里的选择开关")
+        for k, name in core.PLATFORMS.items():
+            cb = ctk.CTkCheckBox(right, text=name, width=20, font=F(12), text_color=FG, checkbox_width=20,
+                                 checkbox_height=20, corner_radius=6, border_width=2, fg_color=PRIMARY,
+                                 hover_color=PRIMARY_HOVER, border_color=TRACK, checkmark_color=ON_PRIMARY,
+                                 command=lambda k=k: self._platform_toggle(k))
+            if k in self.cfg.get("default_platforms", list(core.PLATFORMS)):
+                cb.select()
+            cb.pack(side="left", padx=4)
+            self.plat_cb[k] = cb
+        right, _ = self._row(p, "启动时刷新收藏状态")
+        self._switch(right, "fav_refresh_on_start")
+        right, _ = self._row(p, "自动刷新收藏状态", "后台定时查看收藏的主播是否开播")
+        self._menu(right, "fav_refresh_min", sysset.REFRESH_CHOICES, width=130)
+
+    def _autostart_sync(self):
+        sw, d = self.autostart_sw, self.auto_desc
+        base = "登录 Windows 后自动运行直播助手"
+        if not sysset.autostart_available():
+            sw.deselect()
+            sw.configure(state="disabled")
+            d.configure(text=base + "\n（仅安装版可用，当前是源码运行）", text_color=FG2)
+            return
+        st = sysset.autostart_state()
+        sw.configure(state="normal")
+        sw.select() if st == "on" else sw.deselect()
+        if st == "blocked":
+            d.configure(text=base + "\n已被系统禁用：到“任务管理器 → 启动应用”里重新启用，或把这个开关打开一次", text_color=LIVE_RED)
+        else:
+            d.configure(text=base, text_color=FG2)
+
+    def _autostart_toggle(self):
+        want = bool(self.autostart_sw.get())
+        try:
+            sysset.autostart_set(want)
+        except OSError as e:
+            self._autostart_sync()
+            info(self, "设置失败", "无法修改开机自启：%s" % e)
+            return
+        self._autostart_sync()
+
+    def _platform_toggle(self, k):
+        chosen = [x for x, cb in self.plat_cb.items() if cb.get()]
+        if not chosen:
+            self.plat_cb[k].select()
+            self.plat_desc.configure(text="至少要保留一个平台", text_color=LIVE_RED)
+            return
+        self.plat_desc.configure(text="搜索栏下方的平台按钮按这里的选择开关", text_color=FG2)
+        self._set("default_platforms", chosen)
+        self.app.set_platforms(chosen)
+
+    # ---- 播放
+    def _build_play(self, p):
+        right, self.player_lbl = self._row(p, "PotPlayer", "", wrap=230)
+        self._btn(right, "重新检测", self.app.check_potplayer, 80).pack(side="left", padx=(0, 6))
+        self._btn(right, "重选路径", self.app.pick_potplayer, 80).pack(side="left")
+        self.refresh_player()
+        right, _ = self._row(p, "断流自动续播", "斗鱼 / 虎牙流到期断开时自动重连")
+        self._switch(right, "auto_resume")
+        right, _ = self._row(p, "睡眠定时", "开始播放后到点自动停止；改动对下一次播放生效")
+        self._menu(right, "sleep_minutes", sysset.SLEEP_CHOICES, width=130)
+
+    def refresh_player(self):
+        if self.player_lbl is None:
+            return
+        pp = self.app.potplayer
+        if pp:
+            self.player_lbl.configure(text=_short_path(pp, 34), text_color=FG2)
+        else:
+            self.player_lbl.configure(text="未找到。可以重新检测，或手动选择 PotPlayerMini64.exe", text_color=LIVE_RED)
+
+    # ---- 弹幕
+    def _build_danmaku(self, p):
+        dm, cfg = self.app.dm, self.cfg
+
+        def slider(label, key, lo, hi, steps, fmt):
+            right, _ = self._row(p, label)
+            lb = ctk.CTkLabel(right, text=fmt(cfg[key]), font=F(13), text_color=FG, width=56)
+            lb.pack(side="right")
 
             def on(v, key=key, lb=lb):
                 cfg[key] = round(float(v), 2) if key == "dm_alpha" else int(round(v))
                 lb.configure(text=fmt(cfg[key]))
                 dm.apply_settings()
-            sl = ctk.CTkSlider(box, from_=lo, to=hi, number_of_steps=steps, width=190, fg_color=TRACK, progress_color=PRIMARY,
-                               button_color=PRIMARY, button_hover_color=PRIMARY_HOVER, command=on)
+            sl = ctk.CTkSlider(right, from_=lo, to=hi, number_of_steps=steps, width=170, fg_color=TRACK,
+                               progress_color=PRIMARY, button_color=PRIMARY, button_hover_color=PRIMARY_HOVER, command=on)
             sl.set(cfg[key])
-            sl.grid(row=row, column=1, pady=6)
-        slider(1, "字号", "dm_font", 16, 56, 40, lambda v: "%d" % v)
-        slider(2, "透明度", "dm_alpha", 0.3, 1.0, 14, lambda v: "%d%%" % round(float(v) * 100))
-        slider(3, "飘过时间", "dm_speed", 4, 16, 12, lambda v: "%d 秒" % v)
-        slider(4, "同屏最多", "dm_max", 20, 150, 13, lambda v: "%d 条" % v)
-        ctk.CTkLabel(box, text="显示区域", font=F(13), text_color=FG2).grid(row=5, column=0, sticky="w", padx=(22, 10), pady=6)
-        self.area = ctk.CTkOptionMenu(box, values=danmaku.AREAS, width=190, height=34, corner_radius=17, font=F(13),
-                                      dropdown_font=F(13), fg_color=BTN2, text_color=FG, button_color=BTN2_HOVER,
-                                      button_hover_color=BTN2_HOVER, dropdown_fg_color=CARD, dropdown_text_color=FG,
-                                      dropdown_hover_color=CARD_HOVER, command=self._area)
-        self.area.set(cfg.get("dm_area", "上半屏"))
-        self.area.grid(row=5, column=1, columnspan=2, sticky="w", pady=6)
-        ctk.CTkLabel(box, text="渲染方式", font=F(13), text_color=FG2).grid(row=6, column=0, sticky="w", padx=(22, 10), pady=6)
-        self.rend = ctk.CTkOptionMenu(box, values=danmaku.RENDERERS, width=190, height=34, corner_radius=17, font=F(13),
-                                      dropdown_font=F(13), fg_color=BTN2, text_color=FG, button_color=BTN2_HOVER,
-                                      button_hover_color=BTN2_HOVER, dropdown_fg_color=CARD, dropdown_text_color=FG,
-                                      dropdown_hover_color=CARD_HOVER, command=self._renderer)
-        self.rend.set(cfg.get("dm_renderer", danmaku.RENDERERS[0]))
-        self.rend.grid(row=6, column=1, columnspan=2, sticky="w", pady=6)
-        ctk.CTkLabel(box, text="自动续播", font=F(13), text_color=FG2).grid(row=7, column=0, sticky="w", padx=(22, 10), pady=6)
-        self.auto_sw = ctk.CTkSwitch(box, text="斗鱼 / 虎牙流到期断开时自动重连", font=F(12), text_color=FG2,
-                                     fg_color=TRACK, button_color=KNOB, button_hover_color=KNOB, progress_color=PRIMARY,
-                                     command=self._auto_resume)
-        if cfg.get("auto_resume", True):
-            self.auto_sw.select()
-        self.auto_sw.grid(row=7, column=1, columnspan=2, sticky="w", pady=6)
-        ctk.CTkLabel(box, text="软件更新", font=F(13), text_color=FG2).grid(row=8, column=0, sticky="w", padx=(22, 10), pady=6)
-        self.upd_sw = ctk.CTkSwitch(box, text="启动时检查更新（每天最多一次）", font=F(12), text_color=FG2,
-                                    fg_color=TRACK, button_color=KNOB, button_hover_color=KNOB, progress_color=PRIMARY,
-                                    command=self._upd_switch)
-        if cfg.get("update_check", True):
-            self.upd_sw.select()
-        self.upd_sw.grid(row=8, column=1, columnspan=2, sticky="w", pady=6)
-        self.upd_btn = ctk.CTkButton(box, text="检查更新", width=90, height=30, corner_radius=15, font=F(12),
-                                     fg_color=BTN2, hover_color=BTN2_HOVER, text_color=FG, command=self._upd_check)
-        self.upd_btn.grid(row=9, column=0, sticky="w", padx=(22, 10), pady=6)
-        self.upd_lbl = ctk.CTkLabel(box, text="当前版本 v%s" % __version__, font=F(12), text_color=FG2, anchor="w",
-                                    justify="left", wraplength=300)
-        self.upd_lbl.grid(row=9, column=1, columnspan=2, sticky="w", pady=6)
-        hk = "快捷键 Ctrl+Alt+D 随时开关弹幕。" if hotkey_ok else "快捷键 Ctrl+Alt+D 注册失败（被别的软件占用），请用界面上的开关。"
+            sl.pack(side="right", padx=(0, 6))
+        slider("字号", "dm_font", 16, 56, 40, lambda v: "%d" % v)
+        slider("透明度", "dm_alpha", 0.3, 1.0, 14, lambda v: "%d%%" % round(float(v) * 100))
+        slider("飘过时间", "dm_speed", 4, 16, 12, lambda v: "%d 秒" % v)
+        slider("同屏最多", "dm_max", 20, 150, 13, lambda v: "%d 条" % v)
+        right, _ = self._row(p, "显示区域")
+        self._menu(right, "dm_area", [(a, a) for a in danmaku.AREAS], lambda v: dm.apply_settings(), width=170)
+        right, _ = self._row(p, "渲染方式")
+        self._menu(right, "dm_renderer", [(r, r) for r in danmaku.RENDERERS], lambda v: dm.set_renderer(v), width=170)
+        hk = "快捷键 Ctrl+Alt+D 随时开关弹幕。" if self.app.hotkey_ok else "快捷键 Ctrl+Alt+D 注册失败（被别的软件占用），请用界面上的开关。"
         tip = (hk + "\n弹幕是盖在 PotPlayer 上的透明窗口：窗口化和普通全屏可见；"
                "若 PotPlayer 设为“独占全屏”（Exclusive），弹幕可能被挡住看不到。\n弹幕显示异常（重影、不显示）时，把“渲染方式”切到“兼容（旧）”。")
-        ctk.CTkLabel(box, text=tip, font=F(12), text_color=FG2, justify="left", wraplength=400).grid(
-            row=10, column=0, columnspan=3, sticky="w", padx=22, pady=(10, 6))
-        ctk.CTkButton(box, text="完成", width=100, height=36, corner_radius=18, fg_color=PRIMARY,
-                      hover_color=PRIMARY_HOVER, text_color=ON_PRIMARY, font=F(13, True),
-                      command=self.destroy).grid(row=11, column=0, columnspan=3, sticky="e", padx=22, pady=(6, 18))
-        center_show(self, app)
+        ctk.CTkLabel(p, text=tip, font=F(11), text_color=FG2, justify="left", wraplength=470, anchor="w").pack(
+            fill="x", padx=20, pady=(10, 6))
 
-    def _area(self, v):
-        self.cfg["dm_area"] = v
-        self.dm.apply_settings()
+    # ---- 外观
+    def _build_look(self, p):
+        right, _ = self._row(p, "深色主题", "浅色 / 深色界面，立即生效；主窗口右上角也有同一个开关")
+        self.theme_sw = ctk.CTkSwitch(right, text="", width=46, command=self._theme_toggle, **SWITCH_STYLE)
+        if THEME == "dark":
+            self.theme_sw.select()
+        self.theme_sw.pack()
 
-    def _auto_resume(self):
-        self.cfg["auto_resume"] = bool(self.auto_sw.get())
-        self.dm.save_cfg()
+    def _theme_toggle(self):
+        (self.app.theme_sw.select if self.theme_sw.get() else self.app.theme_sw.deselect)()
+        self.app.switch_theme()
 
-    def _upd_switch(self):
-        self.cfg["update_check"] = bool(self.upd_sw.get())
-        self.dm.save_cfg()
+    def sync_theme(self):
+        if self.theme_sw is not None:
+            (self.theme_sw.select if THEME == "dark" else self.theme_sw.deselect)()
+
+    # ---- 数据
+    def _build_data(self, p):
+        right, _ = self._row(p, "数据文件夹", _short_path(core.APPDIR, 38) + "\n存放收藏、设置和头像缓存")
+        self._btn(right, "打开", self._open_data_dir, 70).pack()
+        right, self.cache_lbl = self._row(p, "头像缓存", "")
+        self._btn(right, "清理", self._clear_cache, 70).pack()
+        self._cache_refresh()
+        right, _ = self._row(p, "备份与恢复", "把收藏和设置存成一个文件，换电脑时导入；导入时保留现有收藏，只补上缺的")
+        self._btn(right, "导出…", self._export, 70).pack(side="left", padx=(0, 6))
+        self._btn(right, "导入…", self._import, 70).pack(side="left")
+        right, _ = self._row(p, "恢复默认设置", "只重置设置项；收藏和 PotPlayer 路径不受影响")
+        self._btn(right, "恢复默认…", self._reset, 90).pack()
+
+    def _open_data_dir(self):
+        try:
+            os.makedirs(core.APPDIR, exist_ok=True)
+            os.startfile(core.APPDIR)
+        except OSError as e:
+            info(self, "打不开", str(e))
+
+    def _cache_refresh(self):
+        n, size = sysset.cache_info()
+        self.cache_lbl.configure(text="已缓存 %d 张头像，占用 %s；清理后会按需重新下载" % (n, sysset.human_size(size)) if n
+                                 else "目前没有缓存")
+
+    def _clear_cache(self):
+        n, size = sysset.clear_cache()
+        self.cache_lbl.configure(text="已清理 %d 张头像，释放 %s" % (n, sysset.human_size(size)) if n else "目前没有缓存")
+
+    def _export(self):
+        name = "直播助手备份-%s.json" % time.strftime("%Y%m%d")
+        path = filedialog.asksaveasfilename(parent=self, title="导出备份", defaultextension=".json", initialfile=name,
+                                            filetypes=[("直播助手备份", "*.json")])
+        if not path:
+            return
+        try:
+            sysset.write_backup(path, sysset.make_backup(self.cfg, self.app.favs, __version__))
+        except OSError as e:
+            info(self, "导出失败", str(e))
+            return
+        info(self, "已导出", "已保存到：\n%s" % path)
+
+    def _import(self):
+        path = filedialog.askopenfilename(parent=self, title="导入备份",
+                                          filetypes=[("直播助手备份", "*.json"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            bk = sysset.read_backup(path)
+        except sysset.BackupError as e:
+            info(self, "无法导入", str(e))
+            return
+        msg = ("备份时间：%s\n包含 %d 个收藏、%d 项设置。\n\n导入会用备份里的设置覆盖当前设置；现有收藏保留，只补上缺的。继续？"
+               % (bk["saved"] or "未知", len(bk["favorites"]), len(bk["settings"])))
+        if not ask(self, "导入备份", msg, "导入", "取消"):
+            return
+        added = self.app.apply_backup(bk)
+        self.rebuild()
+        extra = "（有 %d 项设置的值无效，已跳过）" % bk["skipped"] if bk["skipped"] else ""
+        info(self, "导入完成", "新增 %d 个收藏，导入 %d 项设置。%s" % (added, len(bk["settings"]), extra))
+
+    def _reset(self):
+        if not ask(self, "恢复默认设置", "把所有设置改回默认值（包括关闭开机自启）。\n收藏和 PotPlayer 路径不受影响。继续？",
+                   "恢复默认", "取消"):
+            return
+        self.app.reset_settings()
+        self.rebuild()
+
+    # ---- 关于与更新
+    def _build_about(self, p):
+        right, self.upd_lbl = self._row(p, "软件更新", "当前版本 v%s" % __version__, wrap=270)
+        self.upd_btn = self._btn(right, "检查更新", self._upd_check, 90)
+        self.upd_btn.pack()
+        right, _ = self._row(p, "启动时检查更新", "每天最多检查一次；有新版本时主窗口顶部会提示")
+        self._switch(right, "update_check")
+        right, _ = self._row(p, "项目主页", "github.com/" + updater.UPDATE_REPO)
+        self._btn(right, "打开", lambda: webbrowser.open("https://github.com/" + updater.UPDATE_REPO), 70).pack()
+        right, _ = self._row(p, "开源许可", "AGPL-3.0 开源；第三方组件的许可见清单")
+        self._btn(right, "查看清单", self._open_notices, 90).pack()
 
     def _upd_check(self):
         """手动检查：不受每天一次限制；结果文字显示在这里，发现新版本时主窗口顶部出现横幅（不弹窗）。"""
@@ -529,14 +855,18 @@ class DanmakuSettings(ctk.CTkToplevel):
         self.upd_lbl.configure(text="正在检查…")
 
         def done(r):
-            if not self.winfo_exists():
+            if not self.winfo_exists() or self.upd_btn is None:
                 return
             self.upd_btn.configure(state="normal")
             self.upd_lbl.configure(text=updater_text(r))
         self.app.check_update(True, done)
 
-    def _renderer(self, v):
-        self.dm.set_renderer(v)   # “平滑”= 自绘分层窗口（默认）；“兼容”= 旧的 Tk 画布，万一平滑版在某台电脑上异常可切回
+    def _open_notices(self):
+        path = os.path.join(sysset.app_dir(), "THIRD_PARTY_NOTICES.md")
+        if not os.path.isfile(path):
+            info(self, "找不到清单", "没找到 THIRD_PARTY_NOTICES.md；可以在项目主页的仓库里查看。")
+            return
+        subprocess.Popen(["notepad.exe", path])
 
 
 # ---------------------------------------------------------------- 主窗口
@@ -552,11 +882,17 @@ class App(ctk.CTk):
             self.iconbitmap(resource("icon.ico"))
         except Exception:
             pass
+        self.cfg = core.load_config()
+        for k, v in sysset.SETTING_DEFAULTS.items():       # 新增的设置项补上默认值；坏值（手改配置文件）回到默认
+            try:
+                self.cfg[k] = sysset.clean_value(k, self.cfg[k]) if k in self.cfg else copy.deepcopy(v)
+            except ValueError:
+                self.cfg[k] = copy.deepcopy(v)
+        self.start_hidden = "--autostart" in sys.argv and bool(self.cfg["start_minimized"])
         w, h = 960, 640
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry("%dx%d+%d+%d" % (w, h, (sw - w) // 2, max((sh - h) // 2 - 20, 0)))
+        self.geometry(self._saved_geometry() or "%dx%d+%d+%d" % (w, h, (sw - w) // 2, max((sh - h) // 2 - 20, 0)))
         self.minsize(760, 520)
-        self.cfg = core.load_config()
         self.favs = core.load_favorites()
         self.results = []
         self.cards = []
@@ -567,9 +903,15 @@ class App(ctk.CTk):
         self.play_ctx = None     # 当前播放：主播/地址/画质，续播时复用
         self._geom = None        # 最近一次记录的 PotPlayer 窗口位置，续播后摆回去
         self.potplayer = None
+        self.tray = None         # 托盘图标（sysset.Tray），关到托盘/自启待命时才创建
+        self.watcher = None      # 再次双击图标时唤起本窗口的监听（只在 __main__ 里启用）
+        self._settings = None    # 打开着的设置窗口
+        self._sleep_job = None   # 睡眠定时的 after 句柄
+        self._fav_busy = False   # 正在刷新收藏状态
+        self._fav_last = time.time()
         self.q = queue.Queue()
         self.pool = ThreadPoolExecutor(max_workers=4)
-        self.pstate = {k: True for k in core.PLATFORMS}
+        self.pstate = {k: k in self.cfg["default_platforms"] for k in core.PLATFORMS}
         self.pbtn = {}
         self._build()
         # 弹幕：悬浮层 + 全局快捷键 Ctrl+Alt+D（热键线程里只投递到主线程，不直接碰界面）
@@ -577,14 +919,36 @@ class App(ctk.CTk):
         self.hotkey_ok = self.dm.start_hotkey(lambda: self.post(self.toggle_danmaku))
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(100, self._pump)
-        self.after(300, self.check_potplayer)
-        self.after(600, self.refresh_fav_status)
+        self.after(300, lambda: self.check_potplayer(prompt=not self.start_hidden))   # 开机自启待命时不弹安装询问
+        if self.cfg["fav_refresh_on_start"]:
+            self.after(600, self.refresh_fav_status)
+        self.after(30000, self._fav_tick)
         updater.LOG_PATH = os.path.join(core.APPDIR, "update.log")
         self.after(4000, self.auto_check_update)       # 启动几秒后后台检查，不阻塞界面
         self.show_hint(self.res_box, "输入主播名字回车搜索，或粘贴房间链接/房间号")
         self.update_idletasks()
         track_titlebar(self)
-        self.deiconify()
+        if self.start_hidden:
+            if not self.tray_show():
+                self.iconify()      # 没有托盘可用就最小化到任务栏，别让用户找不到窗口
+        else:
+            self.deiconify()
+
+    def _saved_geometry(self):
+        """上次关闭时的窗口大小位置；没记录/关闭了记忆/已经跑出屏幕（换了显示器）则返回 None，用居中。"""
+        if not self.cfg.get("remember_window"):
+            return None
+        try:
+            scale = self._get_window_scaling()
+        except Exception:
+            scale = 1.0
+        g = sysset.fit_geom(sysset.parse_geom(self.cfg.get("win_geom")), scale, sysset.virtual_screen())
+        return sysset.format_geom(*g) if g else None
+
+    def _remember_geometry(self):
+        if self.cfg.get("remember_window") and self.state() == "normal":   # 最大化/最小化/隐藏时不记
+            self.cfg["win_geom"] = self.geometry()
+            core.save_config(self.cfg)
 
     # ------------------------------------------------------------ 界面
     def _build(self):
@@ -652,7 +1016,9 @@ class App(ctk.CTk):
         pb = ctk.CTkFrame(self, fg_color=CARD, corner_radius=0, height=76, border_width=0)
         pb.pack(fill="x", side="bottom", pady=(10, 0))
         pb.pack_propagate(False)
-        ctk.CTkLabel(pb, text="画质", font=F(12), text_color=FG2).pack(side="left", padx=(20, 6))
+        ctk.CTkButton(pb, text="⚙ 设置", width=76, height=30, corner_radius=15, font=F(12), fg_color=BTN2,
+                      hover_color=BTN2_HOVER, text_color=FG2, command=self.open_settings).pack(side="left", padx=(20, 4))
+        ctk.CTkLabel(pb, text="画质", font=F(12), text_color=FG2).pack(side="left", padx=(12, 6))
         self.quality = ctk.CTkOptionMenu(pb, values=core.QUALITIES, width=146, height=34, corner_radius=17,
                                          font=F(13), dropdown_font=F(13), fg_color=BTN2, text_color=FG, button_color=BTN2_HOVER, button_hover_color=BTN2_HOVER,
                                          dropdown_fg_color=CARD, dropdown_text_color=FG, dropdown_hover_color=CARD_HOVER)
@@ -673,17 +1039,8 @@ class App(ctk.CTk):
         if self.cfg.get("danmaku_on"):
             self.dm_sw.select()
         self.dm_sw.pack(side="left", padx=(14, 0))
-        ctk.CTkButton(pb, text="⚙", width=30, height=28, corner_radius=14, font=F(13), fg_color=BTN2,
-                      hover_color=BTN2_HOVER, text_color=FG2, command=self.open_danmaku_settings
-                      ).pack(side="left", padx=(6, 0))
-        ctk.CTkButton(pb, text="PotPlayer 路径", width=94, height=28, corner_radius=14, font=F(11),
-                      fg_color=BTN2, hover_color=BTN2_HOVER, text_color=FG2,
-                      command=self.pick_potplayer).pack(side="right", padx=(4, 20))
-        ctk.CTkButton(pb, text="重新检测", width=68, height=28, corner_radius=14, font=F(11),
-                      fg_color=BTN2, hover_color=BTN2_HOVER, text_color=FG2,
-                      command=self.check_potplayer).pack(side="right")
         self.status = ctk.CTkLabel(pb, text="就绪", font=F(12), text_color=FG2, anchor="w", width=10)
-        self.status.pack(side="left", fill="x", expand=True, padx=12)
+        self.status.pack(side="left", fill="x", expand=True, padx=(12, 20))
 
     # ------------------------------------------------------------ 更新横幅（非模态，绝不弹窗）
     def _build_update_banner(self):
@@ -713,7 +1070,7 @@ class App(ctk.CTk):
         self.update_policy = updater.Policy()          # 测试时可替换成指向本地假服务器的策略
         self.update_confirm = lambda title, msg: ask(self, title, msg, "下载并更新", "取消")
         self.update_launch = updater.launch_installer  # 测试时可替换，避免真的运行
-        self.update_quit = lambda: self.on_close()
+        self.update_quit = lambda: self.quit_app()      # 更新必须真退出，不能被“关到托盘”拦住
 
     def show_update_banner(self, r):
         self.upd_result = r
@@ -839,6 +1196,15 @@ class App(ctk.CTk):
         finally:
             ctypes.windll.user32.LockWindowUpdate(0)
         ctypes.windll.user32.RedrawWindow(hwnd, None, None, 0x0001 | 0x0004 | 0x0080 | 0x0100)  # INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW
+        w = self._settings
+        if w is not None and w.winfo_exists():
+            w.sync_theme()
+
+    def set_platforms(self, keys):
+        """设置里改了“默认搜索的平台”：搜索栏下方的平台按钮跟着变。"""
+        for k in core.PLATFORMS:
+            self.pstate[k] = k in keys
+            self._style_pill(k)
 
     def _style_pill(self, k):
         on = self.pstate[k]
@@ -931,13 +1297,20 @@ class App(ctk.CTk):
         self.pool.submit(work)
 
     # ------------------------------------------------------------ PotPlayer
-    def check_potplayer(self):
+    def check_potplayer(self, prompt=True):
         self.potplayer = core.find_potplayer(self.cfg)
+        self._settings_refresh()
         if self.potplayer:
-            self.set_status("已找到 PotPlayer：" + self.potplayer)
+            self.set_status("已找到 PotPlayer：" + _short_path(self.potplayer, 48))
             return
-        self.set_status("未找到 PotPlayer", LIVE_RED)
-        self.ask_install()
+        self.set_status("未找到 PotPlayer（设置 → 播放 里可以重新检测或手动选择）", LIVE_RED)
+        if prompt:
+            self.ask_install()
+
+    def _settings_refresh(self):
+        w = self._settings
+        if w is not None and w.winfo_exists():
+            w.refresh_player()
 
     def ask_install(self):
         if core.has_winget():
@@ -947,7 +1320,7 @@ class App(ctk.CTk):
                 self.set_status("正在用 winget 安装 PotPlayer，请稍候…")
                 threading.Thread(target=self._install_worker, daemon=True).start()
                 return
-            self.set_status("未安装 PotPlayer；可手动选择路径，或装好后点“重新检测”")
+            self.set_status("未安装 PotPlayer；可在 设置 → 播放 里手动选择路径，或装好后点“重新检测”")
         else:
             self._fallback_download("这台电脑没有 winget。")
 
@@ -958,6 +1331,7 @@ class App(ctk.CTk):
             p = core.find_potplayer(self.cfg)
             if ok and p:
                 self.potplayer = p
+                self._settings_refresh()
                 self.set_status("PotPlayer 安装完成：" + p)
             else:
                 self._fallback_download("winget 安装失败。")
@@ -966,8 +1340,8 @@ class App(ctk.CTk):
     def _fallback_download(self, why):
         core.open_potplayer_download()
         info(self, "请手动安装 PotPlayer",
-             why + "\n已为你打开 PotPlayer 官方下载页。\n装好后点底部的“重新检测”即可。")
-        self.set_status("等待手动安装 PotPlayer，装好后点“重新检测”")
+             why + "\n已为你打开 PotPlayer 官方下载页。\n装好后在 设置 → 播放 里点“重新检测”即可。")
+        self.set_status("等待手动安装 PotPlayer，装好后在 设置 → 播放 里点“重新检测”")
 
     def pick_potplayer(self):
         f = filedialog.askopenfilename(title="选择 PotPlayerMini64.exe",
@@ -1035,6 +1409,10 @@ class App(ctk.CTk):
     def refresh_fav_status(self):
         """后台逐个查询收藏主播是否在播。"""
         favs = list(self.favs)
+        if not favs or self._fav_busy:
+            return
+        self._fav_busy = True
+        new_avatar = []
 
         def one(f):
             try:
@@ -1042,16 +1420,32 @@ class App(ctk.CTk):
                 f["live"] = r["live"]
                 if r.get("avatar") and not f.get("avatar"):
                     f["avatar"] = r["avatar"]
+                    new_avatar.append(1)
             except Exception:
                 pass
         def work():
-            list(self.pool.map(one, favs))
-            def done():
-                core.save_favorites(self.favs)
-                self.rebuild_favs()
-            self.post(done)
-        if favs:
-            threading.Thread(target=work, daemon=True).start()
+            try:
+                list(self.pool.map(one, favs))
+            finally:
+                def done():
+                    self._fav_busy = False
+                    self._fav_last = time.time()
+                    core.save_favorites(self.favs)
+                    if new_avatar:
+                        self.rebuild_favs()          # 有新头像要加载才重建；否则只更新“直播中”标记，不打断滚动位置
+                    else:
+                        for c in self.fav_cards:
+                            if c.winfo_exists():
+                                c.refresh()
+                self.post(done)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _fav_tick(self):
+        """设置里选了“每 N 分钟自动刷新”时，到点后台刷新一次收藏状态。"""
+        m = int(self.cfg.get("fav_refresh_min") or 0)
+        if m > 0 and self.favs and not self._fav_busy and time.time() - self._fav_last >= m * 60:
+            self.refresh_fav_status()
+        self.after(30000, self._fav_tick)
 
     # ------------------------------------------------------------ 播放
     def play_selected(self):
@@ -1083,6 +1477,20 @@ class App(ctk.CTk):
         self._geom = None
         self._track_geom(self.proc)
         threading.Thread(target=self._watch, args=(self.proc, it["name"], time.time(), False), daemon=True).start()
+        m = int(self.cfg.get("sleep_minutes") or 0)
+        if m > 0:       # 睡眠定时：从开始播放算起，到点自动停止（自动续播不重新计时）
+            self._sleep_job = self.after(m * 60000, self._sleep_fire)
+
+    def _cancel_sleep(self):
+        if self._sleep_job is not None:
+            self.after_cancel(self._sleep_job)
+            self._sleep_job = None
+
+    def _sleep_fire(self):
+        self._sleep_job = None
+        if self.proc:
+            self.stop_play(quiet=True)
+            self.set_status("睡眠定时已到，已停止播放")
 
     # ------------------------------------------------------------ 自动续播
     def _track_geom(self, proc):
@@ -1196,6 +1604,7 @@ class App(ctk.CTk):
                 self._resume(name, msg)
                 return
             self.proc = None
+            self._cancel_sleep()
             self.dm.end()
             self.btn_stop.configure(state="disabled")
             if msg:
@@ -1207,6 +1616,7 @@ class App(ctk.CTk):
         self.post(done)
 
     def stop_play(self, quiet=False):
+        self._cancel_sleep()
         if self.proc:
             core.kill_tree(self.proc)
             self.proc = None
@@ -1235,14 +1645,114 @@ class App(ctk.CTk):
             self.dm_sw.select()
         self.on_danmaku_switch()
 
-    def open_danmaku_settings(self):
-        DanmakuSettings(self, self.cfg, self.dm, self.hotkey_ok)
+    # ------------------------------------------------------------ 设置 / 备份
+    def open_settings(self, page=None):
+        w = self._settings
+        if w is not None and w.winfo_exists():
+            if page:
+                w.show_page(page)
+            w.lift()
+            w.focus_force()
+            return
+        self._settings = SettingsWindow(self, page or "通用")
 
+    def apply_cfg_live(self, old):
+        """设置被批量改动后（导入备份/恢复默认）让正在运行的界面跟上；old 是改动前的配置副本。"""
+        want = self.cfg.get("theme", "light")
+        if want != THEME:
+            (self.theme_sw.select if want == "dark" else self.theme_sw.deselect)()
+            self.switch_theme()
+        self.set_platforms(self.cfg["default_platforms"])
+        self.dm.apply_settings()
+        if old.get("dm_renderer") != self.cfg.get("dm_renderer"):
+            self.dm.set_renderer(self.cfg["dm_renderer"])
+
+    def apply_backup(self, bk):
+        """导入备份：设置覆盖，收藏只补缺的；返回新增的收藏数。"""
+        old = dict(self.cfg)
+        self.cfg.update(bk["settings"])
+        core.save_config(self.cfg)
+        self.favs, added = sysset.merge_favorites(self.favs, bk["favorites"])
+        core.save_favorites(self.favs)
+        self.rebuild_favs()
+        self.apply_cfg_live(old)
+        return added
+
+    def reset_settings(self):
+        old = dict(self.cfg)
+        sysset.restore_defaults(self.cfg)
+        core.save_config(self.cfg)
+        if sysset.autostart_available():
+            try:
+                sysset.autostart_set(False)
+            except OSError:
+                pass
+        self.apply_cfg_live(old)
+
+    # ------------------------------------------------------------ 关闭 / 托盘
     def on_close(self):
+        """点窗口右上角 ✕：按设置退出、最小化到托盘或先问一下。"""
+        act = self.cfg.get("close_action", "exit")
+        if act == "ask":
+            act, remember = choose(self, "关闭直播助手",
+                                   "要退出程序，还是最小化到托盘继续在后台运行？\n（播放和弹幕不受影响）",
+                                   [("退出程序", "exit"), ("最小化到托盘", "tray")], "取消",
+                                   "以后不再询问，记住我的选择")
+            if act is None:
+                return
+            if remember:
+                self.cfg["close_action"] = act
+                core.save_config(self.cfg)
+        if act == "tray":
+            self._remember_geometry()
+            if not self.tray_show():
+                self.iconify()          # 托盘不可用就退而求其次，最小化到任务栏
+            return
+        self.quit_app()
+
+    def tray_show(self):
+        """显示托盘图标并隐藏主窗口；托盘库不可用返回 False（窗口保持原样）。"""
+        if self.tray is None:
+            self.tray = sysset.Tray("直播助手", resource("icon.ico"),
+                                    lambda: self.post(self.show_window), lambda: self.post(self.quit_app))
+        if not self.tray.show():
+            return False
+        self.withdraw()
+        return True
+
+    def show_window(self):
+        """从托盘/再次双击图标唤起主窗口。"""
+        if self.tray is not None:
+            self.tray.hide()
+        self.deiconify()
+        self.state("normal")
+        self.lift()
+        self.attributes("-topmost", True)       # 临时置顶一下，绕过 Windows 对后台程序抢焦点的限制
+        self.after(250, lambda: self.attributes("-topmost", False))
+        self.focus_force()
+
+    def watch_second_launch(self):
+        """用户又双击了图标：不开第二个窗口，而是把这个窗口显示出来（只在 __main__ 里启用）。"""
+        self.watcher = sysset.ShowWatcher(lambda: self.post(self.show_window))
+
+    def quit_app(self):
+        """真正退出：停播放、关弹幕、撤托盘。"""
+        self._remember_geometry()
+        self._cancel_sleep()
         self.stop_play(quiet=True)
+        if self.tray is not None:
+            self.tray.hide()
+        if self.watcher is not None:
+            self.watcher.stop()
         self.dm.shutdown()
         self.destroy()
 
 
 if __name__ == "__main__":
-    App().mainloop()
+    first, _single_instance_handle = sysset.acquire_single_instance()
+    if not first:       # 已经有一个在运行（可能躲在托盘里）：让它把窗口显示出来，自己退出
+        sysset.signal_existing()
+        sys.exit(0)
+    _app = App()
+    _app.watch_second_launch()
+    _app.mainloop()

@@ -12,13 +12,14 @@ shutil.rmtree(core.APPDIR, ignore_errors=True)
 import app
 a = app.App()
 a.update()
-win = app.DanmakuSettings(a, a.cfg, a.dm, True)
+win = app.SettingsWindow(a, "播放")
 a.update()
+sw = win.switches["auto_resume"]
 ok = []
-ok.append(("默认开", bool(win.auto_sw.get()) and a.cfg.get("auto_resume", True)))
-win.auto_sw.deselect(); win._auto_resume(); a.update()
+ok.append(("默认开", bool(sw.get()) and a.cfg.get("auto_resume", True)))
+sw.toggle(); a.update()
 ok.append(("关闭后写入配置", core.load_config().get("auto_resume") is False))
-win.auto_sw.select(); win._auto_resume(); a.update()
+sw.toggle(); a.update()
 ok.append(("再打开后写入配置", core.load_config().get("auto_resume") is True))
 win.destroy(); a.dm.shutdown(); a.destroy()
 for n, v in ok:

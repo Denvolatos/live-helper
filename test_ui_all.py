@@ -25,7 +25,7 @@ core.save_config({"theme": START, "danmaku_on": False})
 import app
 app.App.refresh_qualities = lambda self, it: None
 app.App.refresh_fav_status = lambda self: None
-app.App.check_potplayer = lambda self: setattr(self, "potplayer", "PotPlayerMini64.exe")
+app.App.check_potplayer = lambda self, prompt=True: setattr(self, "potplayer", "PotPlayerMini64.exe")
 from PIL import ImageGrab
 
 out = os.path.join(here, "screenshots", "theme")
@@ -82,9 +82,10 @@ def run_states(tag):
     settle()
     d = app.Dialog(a, "未找到 PotPlayer", "这台电脑上没有检测到 PotPlayer。\n是否用 winget 自动安装？（约需几分钟，期间请耐心等待）", "同意安装", "暂不")
     d.attributes("-topmost", True); shot(tag, "05-dialog-install", d); d.destroy()
-    d = app.Dialog(a, "请手动安装 PotPlayer", "这台电脑没有 winget。\n已为你打开 PotPlayer 官方下载页。\n装好后点底部的“重新检测”即可。", "知道了", None)
+    d = app.Dialog(a, "请手动安装 PotPlayer", "这台电脑没有 winget。\n已为你打开 PotPlayer 官方下载页。\n装好后在 设置 → 播放 里点“重新检测”即可。", "知道了", None)
     d.attributes("-topmost", True); shot(tag, "06-dialog-info", d); d.destroy()
-    ds = app.DanmakuSettings(a, dict(core.load_config(), dm_font=30, dm_alpha=0.9, dm_speed=8, dm_max=60), a_dm(), True)
+    a.cfg.update(dm_font=30, dm_alpha=0.9, dm_speed=8, dm_max=60)
+    ds = app.SettingsWindow(a, "弹幕")
     ds.attributes("-topmost", True); shot(tag, "07-danmaku-settings", ds)
     state["ds"] = ds
 

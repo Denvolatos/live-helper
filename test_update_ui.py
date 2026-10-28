@@ -88,13 +88,14 @@ def shown():
 
 a.update()
 T("启动时横幅不显示", not shown())
-win = app.DanmakuSettings(a, a.cfg, a.dm, True)
+win = app.SettingsWindow(a, "关于")
 a.update()
-T("设置：启动时检查更新默认开", bool(win.upd_sw.get()))
-win.upd_sw.deselect(); win._upd_switch(); a.update()
+usw = win.switches["update_check"]
+T("设置：启动时检查更新默认开", bool(usw.get()))
+usw.toggle(); a.update()
 T("设置：关闭后写入配置", core.load_config().get("update_check") is False)
 T("关闭后不自动检查", not updater.should_auto_check(a.cfg))
-win.upd_sw.select(); win._upd_switch(); a.update()
+usw.toggle(); a.update()
 T("设置：再打开后写入配置", core.load_config().get("update_check") is True)
 
 # 手动检查：结果文字 + 横幅（不受每天一次限制）
