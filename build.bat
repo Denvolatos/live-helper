@@ -10,7 +10,7 @@ if errorlevel 1 exit /b 1
 "%PY%" -m PyInstaller --noconfirm --clean --onedir --windowed --name LiveHelper ^
   --version-file version_info.txt --icon icon.ico --add-data "icon.ico;." --collect-all customtkinter ^
   --collect-all streamlink --collect-all streamlink_cli ^
-  --hidden-import streamlink_cli.main --hidden-import websocket --hidden-import brotli --hidden-import psutil --collect-submodules streamlink.plugins ^
+  --hidden-import streamlink_cli.main --hidden-import websocket --hidden-import brotli --hidden-import psutil --hidden-import pystray --hidden-import pystray._win32 --collect-submodules streamlink.plugins ^
   --exclude-module matplotlib --exclude-module numpy --exclude-module pandas ^
   app.py
 if errorlevel 1 exit /b 1

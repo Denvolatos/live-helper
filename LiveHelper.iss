@@ -41,5 +41,9 @@ Source: "THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\{#AppName}"; Filename: "{app}\LiveHelper.exe"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\LiveHelper.exe"; Tasks: desktopicon
 
+[Registry]
+; 程序里“开机自启”开关写的启动项：卸载时一并清掉（没开过就什么都不做）
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "LiveHelper"; ValueType: none; Flags: uninsdeletevalue
+
 [Run]
 Filename: "{app}\LiveHelper.exe"; Description: "立即运行 {#AppName}"; Flags: nowait postinstall skipifsilent
