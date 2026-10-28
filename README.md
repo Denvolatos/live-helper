@@ -8,7 +8,7 @@
 
 虎牙 / 斗鱼 / B 站，一个小工具搞定
 
-![version](https://img.shields.io/badge/version-v1.1.3-FF7A00)
+![version](https://img.shields.io/badge/version-v1.1.4-FF7A00)
 ![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![python](https://img.shields.io/badge/python-3.12-3776AB)
@@ -32,7 +32,7 @@
 ## ✨ 功能
 
 - 🔍 **搜索**：三个平台可分别勾选；也可以直接输入房间号或房间链接
-- ▶️ **播放**：用 streamlink 管道播放进 PotPlayer（比只把一次性地址贴给播放器更稳，因为可以重新拉流）。**注意：斗鱼的流约每 5 分钟会被服务器切断，目前没有自动续播，需要重新点播放**
+- ▶️ **播放**：用 streamlink 管道播放进 PotPlayer（比只把一次性地址贴给播放器更稳，因为可以重新拉流）。**斗鱼、虎牙的流会被服务器按时间切断（斗鱼部分线路约 5 分钟、虎牙约 2 分钟），程序会自动续播（设置里可关），续播时有几秒黑屏**
 - 🎚️ **画质**：选中主播后查询该房间真实有的档位，显示成"原画（源码流）/ 超清 8 Mbps / 流畅 0.5 Mbps"这样的描述
 - ⭐ **收藏**：常看的主播一键播放，启动时后台刷新是否在播
 - 💬 **弹幕悬浮层**：透明、置顶、点击穿透，跟随 PotPlayer 窗口；播放栏有开关，全局快捷键 `Ctrl+Alt+D`；字号 / 透明度 / 飘过时间 / 显示区域 / 同屏上限可调
@@ -71,7 +71,7 @@
 
 - 三个平台的**弹幕接口都是逆向得到的**，平台改动后可能失效（协议笔记见 [docs/DANMAKU.md](docs/DANMAKU.md)）
 - PotPlayer **独占全屏**时弹幕可能看不到（普通全屏正常）
-- **斗鱼的流约 5 分钟断流**（2026-10-27 实测：约 300 秒后服务器切断，streamlink 正常退出），目前没有自动续播，需要重新点播放；虎牙、B 站的断流情况未测
+- **流被切断时的自动续播不是无缝的**：斗鱼（流地址带 `expire=300` 的线路约 300 秒，`expire=0` 的线路实测不断）和虎牙（实测约 122 秒）会被服务器切断，程序自动重新拉流并开新 PotPlayer 窗口，中间斗鱼约 4~5 秒、虎牙约 1.5 秒黑屏；3 分钟内最多自动续播 2 次；PotPlayer 全屏时续播后会回到窗口模式；B 站实测没有定时切断，不做续播（详见 [CHANGELOG](CHANGELOG.md)、[docs/VERIFICATION.md](docs/VERIFICATION.md)）
 - 斗鱼搜索接口有风控，频繁搜索会提示"行为存在风险"，可改用房间号
 - 弹幕里的 emoji 表情会被去掉；等空行超过 2 秒的弹幕会被丢弃
 - 只做 Windows。高 DPI、多显示器、60Hz 显示器、别人的电脑、杀毒误报等未充分验证
