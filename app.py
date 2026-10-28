@@ -65,15 +65,46 @@ def _selftest(outfile):
     except Exception as e:
         lines.append("弹幕自检失败: %s" % e)
     lines.append("PotPlayer: %s" % core.find_potplayer({}))
+    ok = _selftest_update(lines)
     with open(outfile, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+    return ok
+
+
+def _selftest_update(lines):
+    """更新模块自检：离线部分决定结果（失败返回 False）；联网查询只作参考，失败不影响退出码。"""
+    import updater
+    from version import __version__ as ver
+    P = updater.Policy()
+    base = "https://github.com/%s/releases/download/v9.9.9/" % updater.UPDATE_REPO
+    rel = {"tag_name": "v9.9.9", "body": "x", "assets": [
+        {"name": "LiveHelper-Setup-v9.9.9.exe", "size": 10, "browser_download_url": base + "LiveHelper-Setup-v9.9.9.exe"},
+        {"name": "SHA256SUMS.txt", "browser_download_url": base + "SHA256SUMS.txt"}]}
+    import json as _j
+    r = updater.check_latest(ver, P, lambda u: _j.dumps(rel).encode())
+    checks = [
+        ("版本比较", updater.is_newer("1.10.0", "1.9.0") and not updater.is_newer("1.2.0", "1.2.0")),
+        ("发现新版本(离线模拟)", r["status"] == "new" and r["asset"]["name"] == "LiveHelper-Setup-v9.9.9.exe"),
+        ("地址白名单", updater.url_allowed(base + "a.exe", P) and not updater.url_allowed("https://evil.example/a.exe", P)),
+        ("SHA256SUMS 解析", updater.parse_sums("a" * 64 + "  f.exe", "f.exe") == "a" * 64),
+        ("每日一次节流", not updater.should_auto_check({"update_last_check": 1000}, 1000 + 60)),
+    ]
+    ok = True
+    for n, v in checks:
+        lines.append("更新模块 %s: 通过=%s" % (n, bool(v)))
+        ok = ok and bool(v)
+    try:
+        net = updater.check_latest(ver, P)
+        lines.append("更新联网检查(仅参考): %s%s" % (net["status"], (" " + net["version"]) if net.get("version") else ""))
+    except Exception as e:
+        lines.append("更新联网检查(仅参考)失败: %s" % e)
+    return ok
 
 
 if len(sys.argv) > 1 and sys.argv[1] == "--streamlink-cli":
     _run_streamlink_cli()
 if len(sys.argv) > 2 and sys.argv[1] == "--selftest":
-    _selftest(sys.argv[2])
-    sys.exit(0)
+    sys.exit(0 if _selftest(sys.argv[2]) else 1)
 
 import queue
 import subprocess
@@ -91,6 +122,7 @@ from PIL import Image, ImageDraw
 
 import core
 import danmaku
+import updater
 
 # ---------------------------------------------------------------- 主题
 # 所有颜色都是 (浅色, 深色) 元组：切换主题时只调 ctk.set_appearance_mode，控件自己按主题重绘，不销毁重建。
@@ -385,6 +417,17 @@ class Card(ctk.CTkFrame):
                        border_color=SEL_BORDER if v else BORDER)
 
 
+# ---------------------------------------------------------------- 更新结果文字
+def updater_text(r):
+    st = r.get("status")
+    if st == "new":
+        tip = "" if r.get("asset") else "（无法自动更新：%s）" % r.get("asset_error")
+        return "发现新版本 v%s，主窗口顶部有提示%s" % (r["version"], tip)
+    if st == "latest":
+        return "已是最新版本（v%s）" % __version__
+    return "检查失败：%s" % r.get("reason", "未知原因")
+
+
 # ---------------------------------------------------------------- 弹幕设置
 class DanmakuSettings(ctk.CTkToplevel):
     _deactivate_windows_window_header_manipulation = True
@@ -392,7 +435,7 @@ class DanmakuSettings(ctk.CTkToplevel):
     def __init__(self, app, cfg, dm, hotkey_ok):
         super().__init__(app)
         self.withdraw()
-        self.cfg, self.dm = cfg, dm
+        self.cfg, self.dm, self.app = cfg, dm, app
         self.title("弹幕设置")
         self.configure(fg_color=BG)
         self.resizable(False, False)
@@ -445,14 +488,27 @@ class DanmakuSettings(ctk.CTkToplevel):
         if cfg.get("auto_resume", True):
             self.auto_sw.select()
         self.auto_sw.grid(row=7, column=1, columnspan=2, sticky="w", pady=6)
+        ctk.CTkLabel(box, text="软件更新", font=F(13), text_color=FG2).grid(row=8, column=0, sticky="w", padx=(22, 10), pady=6)
+        self.upd_sw = ctk.CTkSwitch(box, text="启动时检查更新（每天最多一次）", font=F(12), text_color=FG2,
+                                    fg_color=TRACK, button_color=KNOB, button_hover_color=KNOB, progress_color=PRIMARY,
+                                    command=self._upd_switch)
+        if cfg.get("update_check", True):
+            self.upd_sw.select()
+        self.upd_sw.grid(row=8, column=1, columnspan=2, sticky="w", pady=6)
+        self.upd_btn = ctk.CTkButton(box, text="检查更新", width=90, height=30, corner_radius=15, font=F(12),
+                                     fg_color=BTN2, hover_color=BTN2_HOVER, text_color=FG, command=self._upd_check)
+        self.upd_btn.grid(row=9, column=0, sticky="w", padx=(22, 10), pady=6)
+        self.upd_lbl = ctk.CTkLabel(box, text="当前版本 v%s" % __version__, font=F(12), text_color=FG2, anchor="w",
+                                    justify="left", wraplength=300)
+        self.upd_lbl.grid(row=9, column=1, columnspan=2, sticky="w", pady=6)
         hk = "快捷键 Ctrl+Alt+D 随时开关弹幕。" if hotkey_ok else "快捷键 Ctrl+Alt+D 注册失败（被别的软件占用），请用界面上的开关。"
         tip = (hk + "\n弹幕是盖在 PotPlayer 上的透明窗口：窗口化和普通全屏可见；"
                "若 PotPlayer 设为“独占全屏”（Exclusive），弹幕可能被挡住看不到。\n弹幕显示异常（重影、不显示）时，把“渲染方式”切到“兼容（旧）”。")
         ctk.CTkLabel(box, text=tip, font=F(12), text_color=FG2, justify="left", wraplength=400).grid(
-            row=8, column=0, columnspan=3, sticky="w", padx=22, pady=(10, 6))
+            row=10, column=0, columnspan=3, sticky="w", padx=22, pady=(10, 6))
         ctk.CTkButton(box, text="完成", width=100, height=36, corner_radius=18, fg_color=PRIMARY,
                       hover_color=PRIMARY_HOVER, text_color=ON_PRIMARY, font=F(13, True),
-                      command=self.destroy).grid(row=9, column=0, columnspan=3, sticky="e", padx=22, pady=(6, 18))
+                      command=self.destroy).grid(row=11, column=0, columnspan=3, sticky="e", padx=22, pady=(6, 18))
         center_show(self, app)
 
     def _area(self, v):
@@ -462,6 +518,22 @@ class DanmakuSettings(ctk.CTkToplevel):
     def _auto_resume(self):
         self.cfg["auto_resume"] = bool(self.auto_sw.get())
         self.dm.save_cfg()
+
+    def _upd_switch(self):
+        self.cfg["update_check"] = bool(self.upd_sw.get())
+        self.dm.save_cfg()
+
+    def _upd_check(self):
+        """手动检查：不受每天一次限制；结果文字显示在这里，发现新版本时主窗口顶部出现横幅（不弹窗）。"""
+        self.upd_btn.configure(state="disabled")
+        self.upd_lbl.configure(text="正在检查…")
+
+        def done(r):
+            if not self.winfo_exists():
+                return
+            self.upd_btn.configure(state="normal")
+            self.upd_lbl.configure(text=updater_text(r))
+        self.app.check_update(True, done)
 
     def _renderer(self, v):
         self.dm.set_renderer(v)   # “平滑”= 自绘分层窗口（默认）；“兼容”= 旧的 Tk 画布，万一平滑版在某台电脑上异常可切回
@@ -507,6 +579,8 @@ class App(ctk.CTk):
         self.after(100, self._pump)
         self.after(300, self.check_potplayer)
         self.after(600, self.refresh_fav_status)
+        updater.LOG_PATH = os.path.join(core.APPDIR, "update.log")
+        self.after(4000, self.auto_check_update)       # 启动几秒后后台检查，不阻塞界面
         self.show_hint(self.res_box, "输入主播名字回车搜索，或粘贴房间链接/房间号")
         self.update_idletasks()
         track_titlebar(self)
@@ -516,6 +590,8 @@ class App(ctk.CTk):
     def _build(self):
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.pack(fill="x", padx=20, pady=(18, 8))
+        self._top = top
+        self._build_update_banner()
         bar = ctk.CTkFrame(top, fg_color=CARD, corner_radius=26, height=52, border_width=1, border_color=BORDER)
         self.bar = bar
         bar.pack(fill="x")
@@ -608,6 +684,145 @@ class App(ctk.CTk):
                       command=self.check_potplayer).pack(side="right")
         self.status = ctk.CTkLabel(pb, text="就绪", font=F(12), text_color=FG2, anchor="w", width=10)
         self.status.pack(side="left", fill="x", expand=True, padx=12)
+
+    # ------------------------------------------------------------ 更新横幅（非模态，绝不弹窗）
+    def _build_update_banner(self):
+        self.upd_banner = ctk.CTkFrame(self, fg_color=CARD, corner_radius=12, border_width=1, border_color=PRIMARY)
+        row = ctk.CTkFrame(self.upd_banner, fg_color="transparent")
+        row.pack(fill="x", padx=12, pady=(8, 8))
+        self.upd_text = ctk.CTkLabel(row, text="", font=F(12, True), text_color=FG, anchor="w", justify="left")
+        self.upd_text.pack(side="left", padx=(2, 8))
+        self.upd_close = ctk.CTkButton(row, text="✕", width=26, height=26, corner_radius=13, font=F(12), fg_color=BTN2,
+                                       hover_color=BTN2_HOVER, text_color=FG2, command=self.hide_update_banner)
+        self.upd_close.pack(side="right")
+        self.upd_btn_skip = ctk.CTkButton(row, text="跳过此版本", width=82, height=26, corner_radius=13, font=F(11),
+                                          fg_color=BTN2, hover_color=BTN2_HOVER, text_color=FG2, command=self.skip_update)
+        self.upd_btn_skip.pack(side="right", padx=(0, 6))
+        self.upd_btn_go = ctk.CTkButton(row, text="立即更新", width=76, height=26, corner_radius=13, font=F(11, True),
+                                        fg_color=PRIMARY, hover_color=PRIMARY_HOVER, text_color=ON_PRIMARY,
+                                        command=self.start_update)
+        self.upd_btn_go.pack(side="right", padx=(0, 6))
+        self.upd_btn_notes = ctk.CTkButton(row, text="更新说明", width=70, height=26, corner_radius=13, font=F(11),
+                                           fg_color=BTN2, hover_color=BTN2_HOVER, text_color=FG2, command=self.toggle_update_notes)
+        self.upd_btn_notes.pack(side="right", padx=(0, 6))
+        self.upd_notes = ctk.CTkLabel(self.upd_banner, text="", font=F(12), text_color=FG2, anchor="w", justify="left",
+                                      wraplength=840)
+        self.upd_result = None
+        self.upd_busy = False
+        self.upd_notes_open = False
+        self.update_policy = updater.Policy()          # 测试时可替换成指向本地假服务器的策略
+        self.update_confirm = lambda title, msg: ask(self, title, msg, "下载并更新", "取消")
+        self.update_launch = updater.launch_installer  # 测试时可替换，避免真的运行
+        self.update_quit = lambda: self.on_close()
+
+    def show_update_banner(self, r):
+        self.upd_result = r
+        self.upd_busy = False
+        self.upd_text.configure(text="发现新版本 v%s" % r["version"], text_color=FG)
+        self.upd_btn_go.configure(state="normal" if r.get("asset") else "disabled", text="立即更新")
+        for b in (self.upd_btn_skip, self.upd_btn_notes):
+            b.configure(state="normal")
+        self._set_notes(False)
+        if not self.upd_banner.winfo_ismapped():
+            self.upd_banner.pack(fill="x", padx=20, pady=(12, 0), before=self._top)
+
+    def hide_update_banner(self):
+        if self.upd_busy:
+            return
+        self.upd_banner.pack_forget()
+
+    def _set_notes(self, open_):
+        self.upd_notes_open = open_
+        if open_ and self.upd_result:
+            self.upd_notes.configure(text=updater.notes_preview(self.upd_result.get("notes")))
+            self.upd_notes.pack(fill="x", padx=14, pady=(0, 10))
+        else:
+            self.upd_notes.pack_forget()
+
+    def toggle_update_notes(self):
+        self._set_notes(not self.upd_notes_open)
+
+    def skip_update(self):
+        if self.upd_result and not self.upd_busy:
+            updater.skip_version(self.cfg, self.upd_result["version"])
+            core.save_config(self.cfg)
+            self.upd_banner.pack_forget()
+
+    def check_update(self, manual, cb=None):
+        """后台线程检查；结果回到主线程。手动检查忽略“已跳过”并显示结果；自动检查失败只写日志。"""
+        if not manual:
+            updater.mark_checked(self.cfg)
+            core.save_config(self.cfg)
+
+        def work():
+            r = updater.check_latest(policy=self.update_policy)
+
+            def done():
+                try:
+                    if r["status"] == "new" and (manual or updater.should_notify(r, self.cfg)):
+                        self.show_update_banner(r)
+                    if cb:
+                        cb(r)
+                except Exception as e:
+                    updater._log("显示更新结果出错: %s" % e)
+            self.post(done)
+        threading.Thread(target=work, daemon=True).start()
+
+    def auto_check_update(self):
+        if updater.should_auto_check(self.cfg):
+            self.check_update(False)
+
+    def start_update(self):
+        r = self.upd_result
+        if self.upd_busy or not r or not r.get("asset"):
+            return
+        a = r["asset"]
+        size = "约 %.1f MB" % (a["size"] / 1048576.0) if a.get("size") else "大小未知"
+        msg = ("文件：%s（%s）\n来源：%s\n\n将下载并校验（SHA256），校验通过后运行安装程序，当前程序会关闭。"
+               "安装包未做代码签名，Windows 可能提示未知发布者；校验值来自同一个发布页，只能防下载损坏。"
+               % (a["name"], size, a["url"]))
+        if not self.update_confirm("立即更新到 v%s？" % r["version"], msg):
+            return
+        self.upd_busy = True
+        for b in (self.upd_btn_go, self.upd_btn_skip, self.upd_btn_notes):
+            b.configure(state="disabled")
+        self.upd_text.configure(text="正在下载 v%s … 0%%" % r["version"], text_color=FG)
+
+        def prog(got, total):
+            pct = "%d%%" % (got * 100 // total) if total else "%.1f MB" % (got / 1048576.0)
+            self.post(lambda: self.upd_text.configure(text="正在下载 v%s … %s" % (r["version"], pct)))
+
+        def work():
+            try:
+                path, info = updater.download_and_verify(a, self.update_policy, prog)
+            except updater.UpdateError as e:
+                msg = str(e)
+                self.post(lambda: self._update_failed(msg))
+                return
+            except Exception as e:
+                updater._log("更新异常: %s" % e)
+                msg = "更新失败：%s" % e
+                self.post(lambda: self._update_failed(msg))
+                return
+            self.post(lambda: self._update_ready(path))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_failed(self, msg):
+        self.upd_busy = False
+        self.upd_text.configure(text="更新失败：%s" % msg.replace("更新失败：", ""), text_color="#D14343")
+        for b in (self.upd_btn_skip, self.upd_btn_notes):
+            b.configure(state="normal")
+        self.upd_btn_go.configure(state="normal", text="重试")
+
+    def _update_ready(self, path):
+        self.upd_text.configure(text="校验通过，正在启动安装程序…")
+        try:
+            self.update_launch(path)
+        except Exception as e:
+            updater._log("启动安装程序失败: %s" % e)
+            self._update_failed("无法启动安装程序（%s），安装包在 %s" % (e, path))
+            return
+        self.after(400, self.update_quit)
 
     def switch_theme(self):
         """切换浅/深色：只切 appearance mode，控件按 (浅, 深) 元组颜色就地重绘，不销毁重建，状态天然保留。"""
