@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """LatoMedia · 赛事数据转发小程序（跑在服务器上，只用 Python 自带的库）。
 
-每隔几分钟去 PandaScore 取一次瓦 / CS / LOL 的"正在进行、即将开始、刚结束"的比赛，整理成精简的 JSON 存起来；
+每隔几分钟去 PandaScore 取一次无畏契约 / CS / LOL 的"正在进行、即将开始、刚结束"的比赛，整理成精简的 JSON 存起来；
 软件来问的时候直接给存的那份，所以令牌只放在服务器上，用户多了也不会超过 PandaScore 的每小时请求上限。
 
 环境变量（由 systemd 的 EnvironmentFile 提供，令牌绝不写进代码、不进日志）：

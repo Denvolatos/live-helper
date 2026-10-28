@@ -1254,7 +1254,7 @@ class App(ctk.CTk):
         g0 = self.cfg.get("match_game")
         self.game = g0 if g0 in matches.GAME_IDS else matches.GAME_IDS[0]
         for g, name in matches.GAMES:
-            b = ctk.CTkButton(hd, text=name, width=64, height=30, corner_radius=15, font=F(13, True),
+            b = ctk.CTkButton(hd, text=name, width=max(64, 22 + 15 * len(name)), height=30, corner_radius=15, font=F(13, True),
                               command=lambda g=g: self.set_game(g))
             b.pack(side="left", padx=(0, 6))
             self.game_btns[g] = b

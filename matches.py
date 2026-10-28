@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""赛事数据（不含界面）：从我们自己的服务器读取瓦 / CS / LOL 的赛程和比分，转成本地时间，并做本地缓存。
+"""赛事数据（不含界面）：从我们自己的服务器读取无畏契约 / CS / LOL 的赛程和比分，转成本地时间，并做本地缓存。
 只保留显示要用的字段、不使用服务器给的任何网址，所以即使收到异常内容也只会显示成文字。"""
 import json
 import os
@@ -10,7 +10,7 @@ from datetime import datetime
 import core
 
 DEFAULT_API = "http://43.103.50.235:8080"          # 我们的赛事数据服务器（server/matches_relay.py）
-GAMES = (("lol", "LOL"), ("csgo", "CS"), ("valorant", "瓦"))
+GAMES = (("lol", "LOL"), ("csgo", "CS"), ("valorant", "无畏契约"))
 GAME_IDS = tuple(g for g, _ in GAMES)
 KINDS = (("running", "正在进行"), ("upcoming", "即将开始"), ("past", "刚结束"))
 SHOW_LIMIT = {"running": 20, "upcoming": 20, "past": 10}
