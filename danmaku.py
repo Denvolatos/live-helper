@@ -1410,6 +1410,22 @@ class DanmakuManager:
         self._lost = 0
         self._sync()
 
+    def rebind(self, proc):
+        """自动续播：只换播放进程，弹幕客户端和悬浮层保持连接，随后自动跟随新的 PotPlayer 窗口。"""
+        if not self.session:
+            return
+        self.session.update(proc=proc, pre={h for h, _, _ in list_windows()})
+        self.hwnd = None
+        self._lost = 0
+
+    def player_window(self):
+        """当前会话的 PotPlayer 窗口句柄（找不到返回 None）；弹幕开关是否开启都可用。"""
+        if not self.session:
+            return None
+        if self.hwnd and user32.IsWindow(self.hwnd):
+            return self.hwnd
+        return self._find_window()
+
     def end(self):
         self.session = None
         self._stop_client()

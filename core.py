@@ -425,6 +425,59 @@ def start_play(potplayer, url, quality=DEFAULT_QUALITY):
                             stdin=subprocess.DEVNULL, creationflags=NO_WINDOW, env=env)
 
 
+# ---------------------------------------------------------------- 自动续播
+# 实测（见 docs/VERIFICATION.md）：这些平台的流会被服务器在固定时间后切断，streamlink 正常退出（退出码 0）；
+# 斗鱼只有流地址带 expire=300 的线路会断，其它线路不断——所以只在“流意外结束且房间仍在播”时才续播。
+# 值是给用户看的人话；没测出会断的平台（B 站）不在这里，不做自动续播。
+EXPIRING = {"douyu": "斗鱼流到期断开（部分线路约每 5 分钟）", "huya": "虎牙流到期断开（约每 2 分钟）"}
+RESUME_MIN_PLAY = 60     # 播放不足这么多秒就退出，当作异常，不自动续播
+RESUME_MAX = 2           # 窗口期内最多续播次数
+RESUME_WINDOW = 180      # 防抖窗口（秒）
+
+
+class AutoResumer:
+    """判断 streamlink 退出后要不要自动续播（不碰界面，方便单独测试）。
+
+    on_exit() 返回 (动作, 提示)：动作 "resume" = 重新拉起；"stop" = 不续播；提示是给状态栏的人话。
+    用户点“停止”或关闭 PotPlayer 视为主动结束，不续播；主播下播不续播；窗口期内续播次数超限就停下。
+    """
+
+    def __init__(self, platform, rid, live_fn=None, now=None, min_play=None, max_n=None, window=None):
+        import time as _t
+        self.platform, self.rid = platform, str(rid)
+        self.live_fn = live_fn or (lambda: lookup_room(platform, rid).get("live", True))
+        self.now = now or _t.time
+        self.min_play = RESUME_MIN_PLAY if min_play is None else min_play
+        self.max_n = RESUME_MAX if max_n is None else max_n
+        self.window = RESUME_WINDOW if window is None else window
+        self.times = []
+
+    def notice(self):
+        return "%s，正在自动续播…" % EXPIRING.get(self.platform, "流到期")
+
+    def on_exit(self, code, lines, played, enabled=True):
+        if not enabled or self.platform not in EXPIRING:
+            return "stop", None
+        if code != 0:
+            return "stop", None                        # 真正的错误由界面按原逻辑提示
+        if any("Player closed" in l for l in lines):
+            return "stop", None                        # 用户关了 PotPlayer：主动结束
+        if played < self.min_play:
+            return "stop", None                        # 刚开就退出，不是到期，别循环重启
+        try:
+            live = self.live_fn()
+        except Exception:
+            live = True                                # 查不到状态就先试一次，失败由 streamlink 的报错说明
+        if not live:
+            return "stop", "主播已下播"
+        t = self.now()
+        self.times = [x for x in self.times if t - x < self.window]
+        if len(self.times) >= self.max_n:
+            return "stop", "连续断开，已停止自动续播，请点播放重试"
+        self.times.append(t)
+        return "resume", self.notice()
+
+
 def kill_tree(proc):
     """结束 streamlink 子进程及其拉起的播放器。"""
     if proc is None or proc.poll() is not None:

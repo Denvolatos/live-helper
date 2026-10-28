@@ -76,9 +76,12 @@ if len(sys.argv) > 2 and sys.argv[1] == "--selftest":
     sys.exit(0)
 
 import queue
+import subprocess
 import ctypes
+import ctypes.wintypes
 from version import __version__
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog
 from concurrent.futures import ThreadPoolExecutor
@@ -435,19 +438,30 @@ class DanmakuSettings(ctk.CTkToplevel):
                                       dropdown_hover_color=CARD_HOVER, command=self._renderer)
         self.rend.set(cfg.get("dm_renderer", danmaku.RENDERERS[0]))
         self.rend.grid(row=6, column=1, columnspan=2, sticky="w", pady=6)
+        ctk.CTkLabel(box, text="自动续播", font=F(13), text_color=FG2).grid(row=7, column=0, sticky="w", padx=(22, 10), pady=6)
+        self.auto_sw = ctk.CTkSwitch(box, text="斗鱼 / 虎牙流到期断开时自动重连", font=F(12), text_color=FG2,
+                                     fg_color=TRACK, button_color=KNOB, button_hover_color=KNOB, progress_color=PRIMARY,
+                                     command=self._auto_resume)
+        if cfg.get("auto_resume", True):
+            self.auto_sw.select()
+        self.auto_sw.grid(row=7, column=1, columnspan=2, sticky="w", pady=6)
         hk = "快捷键 Ctrl+Alt+D 随时开关弹幕。" if hotkey_ok else "快捷键 Ctrl+Alt+D 注册失败（被别的软件占用），请用界面上的开关。"
         tip = (hk + "\n弹幕是盖在 PotPlayer 上的透明窗口：窗口化和普通全屏可见；"
                "若 PotPlayer 设为“独占全屏”（Exclusive），弹幕可能被挡住看不到。\n弹幕显示异常（重影、不显示）时，把“渲染方式”切到“兼容（旧）”。")
         ctk.CTkLabel(box, text=tip, font=F(12), text_color=FG2, justify="left", wraplength=400).grid(
-            row=7, column=0, columnspan=3, sticky="w", padx=22, pady=(10, 6))
+            row=8, column=0, columnspan=3, sticky="w", padx=22, pady=(10, 6))
         ctk.CTkButton(box, text="完成", width=100, height=36, corner_radius=18, fg_color=PRIMARY,
                       hover_color=PRIMARY_HOVER, text_color=ON_PRIMARY, font=F(13, True),
-                      command=self.destroy).grid(row=8, column=0, columnspan=3, sticky="e", padx=22, pady=(6, 18))
+                      command=self.destroy).grid(row=9, column=0, columnspan=3, sticky="e", padx=22, pady=(6, 18))
         center_show(self, app)
 
     def _area(self, v):
         self.cfg["dm_area"] = v
         self.dm.apply_settings()
+
+    def _auto_resume(self):
+        self.cfg["auto_resume"] = bool(self.auto_sw.get())
+        self.dm.save_cfg()
 
     def _renderer(self, v):
         self.dm.set_renderer(v)   # “平滑”= 自绘分层窗口（默认）；“兼容”= 旧的 Tk 画布，万一平滑版在某台电脑上异常可切回
@@ -477,6 +491,9 @@ class App(ctk.CTk):
         self.fav_cards = []
         self.selected_card = None
         self.proc = None
+        self.resumer = None      # 自动续播判断（core.AutoResumer）
+        self.play_ctx = None     # 当前播放：主播/地址/画质，续播时复用
+        self._geom = None        # 最近一次记录的 PotPlayer 窗口位置，续播后摆回去
         self.potplayer = None
         self.q = queue.Queue()
         self.pool = ThreadPoolExecutor(max_workers=4)
@@ -846,7 +863,85 @@ class App(ctk.CTk):
             return
         self.btn_stop.configure(state="normal")
         self.dm.begin(it["platform"], it["rid"], self.proc)
-        threading.Thread(target=self._watch, args=(self.proc, it["name"]), daemon=True).start()
+        self.play_ctx = dict(item=it, url=url, q=q)
+        self.resumer = core.AutoResumer(it["platform"], it["rid"])
+        self._geom = None
+        self._track_geom(self.proc)
+        threading.Thread(target=self._watch, args=(self.proc, it["name"], time.time(), False), daemon=True).start()
+
+    # ------------------------------------------------------------ 自动续播
+    def _track_geom(self, proc):
+        """播放期间每 0.5 秒记下 PotPlayer 窗口的位置/是否最大化，续播后摆回去。"""
+        if self.proc is not proc:
+            return
+        try:
+            h = self.dm.player_window()
+            u = danmaku.user32
+            if h and u.IsWindowVisible(h) and not u.IsIconic(h):
+                r = ctypes.wintypes.RECT()
+                u.GetWindowRect(h, ctypes.byref(r))
+                pid = ctypes.wintypes.DWORD()
+                u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+                self._geom = dict(hwnd=h, pid=pid.value, rect=(r.left, r.top, r.right - r.left, r.bottom - r.top),
+                                  zoomed=bool(u.IsZoomed(h)))
+        except Exception:
+            pass
+        self.after(500, lambda: self._track_geom(proc))
+
+    def _restore_geom(self, geom, proc, st=None):
+        """新窗口出现后把它摆回旧窗口的位置/大小，不抢焦点。PotPlayer 打开视频后会自己按视频大小再调一次窗口，
+        所以窗口出现后的 15 秒内发现被改回去就再摆一次（最多 4 次）。"""
+        if self.proc is not proc or not geom:
+            return
+        st = st or dict(t0=time.time(), seen=None, n=0)
+        now = time.time()
+        h = self.dm.player_window()
+        u = danmaku.user32
+        if h and u.IsWindowVisible(h) and h != geom.get("hwnd"):
+            if st["seen"] is None:
+                st["seen"] = now
+            x, y, w, hh = geom["rect"]
+            r = ctypes.wintypes.RECT()
+            u.GetWindowRect(h, ctypes.byref(r))
+            cur = (r.left, r.top, r.right - r.left, r.bottom - r.top)
+            if geom["zoomed"]:
+                if not u.IsZoomed(h) and st["n"] < 4:
+                    u.ShowWindow(h, 3)  # SW_MAXIMIZE
+                    st["n"] += 1
+            elif cur != (x, y, w, hh) and st["n"] < 4:
+                u.SetWindowPos(h, 0, x, y, w, hh, 0x0004 | 0x0010)  # NOZORDER|NOACTIVATE
+                st["n"] += 1
+            if now - st["seen"] >= 15:
+                return
+        elif now - st["t0"] > 25:
+            return
+        self.after(300, lambda: self._restore_geom(geom, proc, st))
+
+    def _resume(self, name, msg):
+        """流到期后重新拉起 streamlink：弹幕客户端/悬浮层不动，只换播放进程，并清掉残留的旧 PotPlayer 窗口。"""
+        ctx = self.play_ctx
+        it = ctx["item"]
+        self.set_status(msg, PCOL[it["platform"]])
+        geom = self._geom
+        if geom and danmaku.user32.IsWindow(geom["hwnd"]):   # 旧窗口还在（没被 streamlink 一起关掉）就清掉，避免堆积
+            try:
+                subprocess.run(["taskkill", "/PID", str(geom["pid"]), "/T", "/F"], capture_output=True,
+                               creationflags=core.NO_WINDOW, timeout=10)
+            except Exception:
+                pass
+        try:
+            newp = core.start_play(self.potplayer, ctx["url"], ctx["q"])
+        except Exception as e:
+            self.proc = None
+            self.dm.end()
+            self.btn_stop.configure(state="disabled")
+            self.set_status("自动续播失败：%s" % e, LIVE_RED)
+            return
+        self.proc = newp
+        self.dm.rebind(newp)
+        self._track_geom(newp)
+        self._restore_geom(geom, newp)
+        threading.Thread(target=self._watch, args=(newp, name, time.time(), True), daemon=True).start()
 
     @staticmethod
     def friendly(lines):
@@ -862,25 +957,38 @@ class App(ctk.CTk):
         err = [l for l in lines if "error" in l.lower()]
         return "播放失败：" + (err[-1].split("error:")[-1].strip()[:80] if err else "未知原因")
 
-    def _watch(self, proc, name):
+    def _watch(self, proc, name, started, resumed):
         lines = []
         for raw in proc.stdout:
             line = raw.decode("utf-8", "replace").rstrip()
             if line:
                 lines.append(line)
                 if "Opening stream" in line:
-                    self.log("已开始播放：" + name)
+                    self.log(("已自动续播：" if resumed else "已开始播放：") + name)
         code = proc.wait()
+        act, msg = "stop", None
+        rs = self.resumer
+        if self.proc is proc and rs is not None:   # 用户点了“停止”时 self.proc 已被清空，不续播
+            try:
+                act, msg = rs.on_exit(code, lines, time.time() - started, bool(self.cfg.get("auto_resume", True)))
+            except Exception:
+                act, msg = "stop", None
 
         def done():
-            if self.proc is proc:
-                self.proc = None
-                self.dm.end()
-                self.btn_stop.configure(state="disabled")
-                if code != 0:
-                    self.set_status(self.friendly(lines), LIVE_RED)
-                else:
-                    self.set_status("播放已结束：" + name)
+            if self.proc is not proc:
+                return
+            if act == "resume":
+                self._resume(name, msg)
+                return
+            self.proc = None
+            self.dm.end()
+            self.btn_stop.configure(state="disabled")
+            if msg:
+                self.set_status(msg, LIVE_RED)
+            elif code != 0:
+                self.set_status(self.friendly(lines), LIVE_RED)
+            else:
+                self.set_status("播放已结束：" + name)
         self.post(done)
 
     def stop_play(self, quiet=False):
