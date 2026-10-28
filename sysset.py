@@ -222,7 +222,7 @@ def read_backup(path):
     """读取并校验备份文件；返回 dict(settings, favorites, skipped, saved)。看不懂的内容抛 BackupError。"""
     try:
         if os.path.getsize(path) > 2 * 1024 * 1024:
-            raise BackupError("文件太大，不像是直播助手的备份")
+            raise BackupError("文件太大，不像是 LatoMedia 的备份")
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except BackupError:
@@ -230,7 +230,7 @@ def read_backup(path):
     except (OSError, ValueError) as e:
         raise BackupError("无法读取这个文件：%s" % e)
     if not isinstance(data, dict) or data.get("kind") != BACKUP_KIND:
-        raise BackupError("这不是直播助手的备份文件")
+        raise BackupError("这不是 LatoMedia 的备份文件")
     settings, skipped = {}, 0
     raw = data.get("settings")
     for k, v in (raw if isinstance(raw, dict) else {}).items():

@@ -6,7 +6,7 @@ txt = f"""VSVersionInfo(
   kids=[
     StringFileInfo([StringTable("080404B0", [
       StringStruct("CompanyName", ""),
-      StringStruct("FileDescription", "{__app_name__} - 直播搜索与 PotPlayer 播放"),
+      StringStruct("FileDescription", "{__app_name__} - 直播、赛事与 PotPlayer 播放"),
       StringStruct("FileVersion", "{__version__}"),
       StringStruct("InternalName", "LiveHelper"),
       StringStruct("OriginalFilename", "LiveHelper.exe"),

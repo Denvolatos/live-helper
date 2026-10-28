@@ -3,7 +3,7 @@
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" LiveHelper.iss
 ; 先运行 build.bat 生成 dist\LiveHelper，再编译本脚本，输出在 Output\ 目录。
 
-#define AppName "直播助手"
+#define AppName "LatoMedia"
 ; 版本号：编译时用 ISCC /DAppVer=x.y.z 传入（build.bat 之后由 release.bat 自动传）
 #ifndef AppVer
 #define AppVer "1.1.0"
@@ -16,6 +16,7 @@ VersionInfoVersion={#AppVer}
 AppVersion={#AppVer}
 DefaultDirName={autopf}\LiveHelper
 DefaultGroupName={#AppName}
+UsePreviousGroup=no
 OutputDir=Output
 OutputBaseFilename=LiveHelper-Setup-v{#AppVer}
 Compression=lzma2
@@ -36,6 +37,11 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Source: "dist\LiveHelper\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+
+[InstallDelete]
+; 改名后清掉旧名字的快捷方式，避免升级后留下两份
+Type: filesandordirs; Name: "{userprograms}\直播助手"
+Type: files; Name: "{userdesktop}\直播助手.lnk"
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\LiveHelper.exe"

@@ -642,7 +642,7 @@ class SettingsWindow(ctk.CTkToplevel):
 
     # ---- 通用
     def _build_general(self, p):
-        right, self.auto_desc = self._row(p, "开机自启", "登录 Windows 后自动运行直播助手")
+        right, self.auto_desc = self._row(p, "开机自启", "登录 Windows 后自动运行 LatoMedia")
         self.autostart_sw = ctk.CTkSwitch(right, text="", width=46, command=self._autostart_toggle, **SWITCH_STYLE)
         self.autostart_sw.pack()
         self._autostart_sync()
@@ -669,7 +669,7 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def _autostart_sync(self):
         sw, d = self.autostart_sw, self.auto_desc
-        base = "登录 Windows 后自动运行直播助手"
+        base = "登录 Windows 后自动运行 LatoMedia"
         if not sysset.autostart_available():
             sw.deselect()
             sw.configure(state="disabled")
@@ -800,9 +800,9 @@ class SettingsWindow(ctk.CTkToplevel):
         self.cache_lbl.configure(text="已清理 %d 张头像，释放 %s" % (n, sysset.human_size(size)) if n else "目前没有缓存")
 
     def _export(self):
-        name = "直播助手备份-%s.json" % time.strftime("%Y%m%d")
+        name = "LatoMedia备份-%s.json" % time.strftime("%Y%m%d")
         path = filedialog.asksaveasfilename(parent=self, title="导出备份", defaultextension=".json", initialfile=name,
-                                            filetypes=[("直播助手备份", "*.json")])
+                                            filetypes=[("LatoMedia 备份", "*.json")])
         if not path:
             return
         try:
@@ -814,7 +814,7 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def _import(self):
         path = filedialog.askopenfilename(parent=self, title="导入备份",
-                                          filetypes=[("直播助手备份", "*.json"), ("所有文件", "*.*")])
+                                          filetypes=[("LatoMedia 备份", "*.json"), ("所有文件", "*.*")])
         if not path:
             return
         try:
@@ -878,7 +878,7 @@ class App(ctk.CTk):
         apply_theme(core.load_config().get("theme", "light"))
         super().__init__(fg_color=BG)
         self.withdraw()          # 先隐藏建好界面，最后一次性显示（含深/浅标题栏），启动不闪
-        self.title("直播助手 v%s" % __version__)
+        self.title("LatoMedia v%s" % __version__)
         try:
             self.iconbitmap(resource("icon.ico"))
         except Exception:
@@ -1858,7 +1858,7 @@ class App(ctk.CTk):
         """点窗口右上角 ✕：按设置退出、最小化到托盘或先问一下。"""
         act = self.cfg.get("close_action", "exit")
         if act == "ask":
-            act, remember = choose(self, "关闭直播助手",
+            act, remember = choose(self, "关闭 LatoMedia",
                                    "要退出程序，还是最小化到托盘继续在后台运行？\n（播放和弹幕不受影响）",
                                    [("退出程序", "exit"), ("最小化到托盘", "tray")], "取消",
                                    "以后不再询问，记住我的选择")
@@ -1877,7 +1877,7 @@ class App(ctk.CTk):
     def tray_show(self):
         """显示托盘图标并隐藏主窗口；托盘库不可用返回 False（窗口保持原样）。"""
         if self.tray is None:
-            self.tray = sysset.Tray("直播助手", resource("icon.ico"),
+            self.tray = sysset.Tray("LatoMedia", resource("icon.ico"),
                                     lambda: self.post(self.show_window), lambda: self.post(self.quit_app))
         if not self.tray.show():
             return False

@@ -18,7 +18,7 @@ EXE = os.path.abspath(sys.argv[1])
 here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, here)
 from version import __version__
-TITLE = "直播助手 v%s" % __version__
+TITLE = "LatoMedia v%s" % __version__
 u = ctypes.windll.user32
 u.FindWindowW.restype = wt.HWND
 u.IsWindowVisible.argtypes = [wt.HWND]
