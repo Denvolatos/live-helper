@@ -64,6 +64,7 @@ def T(n, c):
 
 a = app.App()
 a.update_policy = LP
+a.update_mirror = None            # 测试里不连真实的备用源
 a.after_cancel  # (自动检查定时器 4 秒后触发；本测试 4 秒内结束，且下面显式控制)
 conf, launched, quits = [], [], []
 a.update_confirm = lambda t, m: (conf.append((t, m)), True)[1]

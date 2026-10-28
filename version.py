@@ -1,3 +1,3 @@
 # LatoMedia 版本号（只在这里改；窗口标题、exe 属性、安装包文件名都引用它）
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 __app_name__ = "LatoMedia"

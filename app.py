@@ -1084,6 +1084,7 @@ class App(ctk.CTk):
         self.upd_busy = False
         self.upd_notes_open = False
         self.update_policy = updater.Policy()          # 测试时可替换成指向本地假服务器的策略
+        self.update_mirror = updater.mirror_policy()   # GitHub 连不上时的备用源（我们自己的服务器）；测试里设为 None 避免联网
         self.update_confirm = lambda title, msg: ask(self, title, msg, "下载并更新", "取消")
         self.update_launch = updater.launch_installer  # 测试时可替换，避免真的运行
         self.update_quit = lambda: self.quit_app()      # 更新必须真退出，不能被“关到托盘”拦住
@@ -1091,7 +1092,7 @@ class App(ctk.CTk):
     def show_update_banner(self, r):
         self.upd_result = r
         self.upd_busy = False
-        self.upd_text.configure(text="发现新版本 v%s" % r["version"], text_color=FG)
+        self.upd_text.configure(text="发现新版本 v%s%s" % (r["version"], "（来自备用源）" if r.get("source") == "备用源" else ""), text_color=FG)
         self.upd_btn_go.configure(state="normal" if r.get("asset") else "disabled", text="立即更新")
         for b in (self.upd_btn_skip, self.upd_btn_notes):
             b.configure(state="normal")
@@ -1128,7 +1129,7 @@ class App(ctk.CTk):
             core.save_config(self.cfg)
 
         def work():
-            r = updater.check_latest(policy=self.update_policy)
+            r = updater.check_latest_multi([p for p in (self.update_policy, self.update_mirror) if p])
 
             def done():
                 try:
@@ -1167,7 +1168,7 @@ class App(ctk.CTk):
 
         def work():
             try:
-                path, info = updater.download_and_verify(a, self.update_policy, prog)
+                path, info = updater.download_and_verify(a, r.get("policy") or self.update_policy, prog)
             except updater.UpdateError as e:
                 msg = str(e)
                 self.post(lambda: self._update_failed(msg))

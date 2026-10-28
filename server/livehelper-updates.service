@@ -1,0 +1,23 @@
+[Unit]
+Description=LatoMedia update file server (HTTPS, pinned self-signed cert)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/livehelper-relay/updates_server.py
+Environment=UPDATES_DIR=/var/lib/livehelper-updates
+Environment=PORT=8443
+LoadCredential=tls.key:/etc/livehelper/tls/server.key
+Restart=always
+RestartSec=10
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ReadOnlyPaths=/var/lib/livehelper-updates
+
+[Install]
+WantedBy=multi-user.target

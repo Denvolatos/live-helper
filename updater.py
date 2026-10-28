@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
-"""应用内更新：检查 GitHub Release、下载安装包并校验 SHA256。
+"""应用内更新：检查 GitHub Release（连不上时改用我们自己的服务器）、下载安装包并校验 SHA256。
 
 只用标准库。所有网络函数都应在后台线程调用（本模块不碰界面）。
 安全约束（见 docs/VERIFICATION.md 的“更新功能”一节）：
   - 只从 https://github.com/<UPDATE_REPO>/releases/download/ 前缀下载；
   - 重定向的每一跳都校验：必须 https 且主机在 GitHub 自家下载域白名单内；
   - 不内嵌任何 token；是否下载由界面层在用户点击并确认后才调用；
-  - SHA256 取自同一个 Release 的 SHA256SUMS.txt，只能防传输损坏，防不了仓库被入侵。
+  - SHA256 取自同一个 Release 的 SHA256SUMS.txt，只能防传输损坏，防不了仓库被入侵；
+  - 备用源（我们自己的服务器）用自签证书，不走证书链，而是把证书的 SHA256 指纹写死在下面的 MIRROR_PINS 里严格比对。
 """
 import hashlib
+import http.client
 import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -24,6 +27,8 @@ import urllib.request
 from version import __version__
 
 UPDATE_REPO = "Denvolatos/live-helper"          # 更新地址只在这里写一次
+MIRROR_HOST = "43.103.50.235:8443"             # 备用源：我们自己的服务器（server/updates_server.py）
+MIRROR_PINS = ("40f5cd7a5bf4cb928fbf2425976369e25b8ed71ab31afc0d0121d4cd6d263f51",)   # 服务器证书（整张 DER）的 SHA256；换证书时加一个新指纹随新版发布
 CHECK_TIMEOUT = 8                               # 检查更新的超时（秒）
 DOWNLOAD_TIMEOUT = 20                           # 下载时每次读取的超时（秒）
 CHECK_INTERVAL = 24 * 3600                      # 自动检查最短间隔
@@ -59,13 +64,21 @@ class Policy:
     def __init__(self, repo=UPDATE_REPO, api_url=None, prefix=None, api_hosts=("api.github.com",),
                  redirect_hosts=("github.com", "objects.githubusercontent.com",
                                  "release-assets.githubusercontent.com"),
-                 allow_http=False):
+                 allow_http=False, pins=(), label="GitHub"):
+        self.label = label
+        self.pins = tuple(str(x).lower() for x in pins)
         self.repo = repo
         self.api_url = api_url or "https://api.github.com/repos/%s/releases/latest" % repo
         self.prefix = prefix or "https://github.com/%s/releases/download/" % repo
         self.api_hosts = tuple(h.lower() for h in api_hosts)
         self.redirect_hosts = tuple(h.lower() for h in redirect_hosts)
         self.allow_http = allow_http
+
+
+def mirror_policy():
+    """备用源：只信任指纹对得上的那台服务器；不允许任何跳转。"""
+    return Policy(api_url="https://%s/latest.json" % MIRROR_HOST, prefix="https://%s/" % MIRROR_HOST,
+                  api_hosts=(MIRROR_HOST.split(":")[0],), redirect_hosts=(), pins=MIRROR_PINS, label="备用源")
 
 
 # ---------------------------------------------------------------- 版本
@@ -149,9 +162,36 @@ class _Redirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """不验证证书链，改为握手后严格比对服务器证书的 SHA256 指纹；对不上就断开。"""
+
+    def __init__(self, pins):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        super().__init__(context=ctx)
+        self.pins = tuple(pins)
+
+    def https_open(self, req):
+        pins = self.pins
+
+        class Conn(http.client.HTTPSConnection):
+            def connect(self):
+                super().connect()
+                der = self.sock.getpeercert(binary_form=True) or b""
+                if hashlib.sha256(der).hexdigest() not in pins:
+                    self.close()
+                    raise UpdateError("服务器证书指纹不匹配，已拒绝连接")
+        return self.do_open(Conn, req, context=self._context)
+
+
 def _open(url, policy, timeout, no_redirect=False, hops=None):
     hops = hops if hops is not None else []
-    opener = urllib.request.build_opener(_Redirect(policy, hops, no_redirect))
+    handlers = [_Redirect(policy, hops, no_redirect)]
+    if policy.pins:
+        handlers.append(_PinnedHTTPSHandler(policy.pins))
+    opener = urllib.request.build_opener(*handlers)
     req = urllib.request.Request(url, headers={"User-Agent": "LiveHelper/%s" % __version__,
                                                "Accept": "application/vnd.github+json, application/octet-stream, */*"})
     return opener.open(req, timeout=timeout)
@@ -237,7 +277,22 @@ def check_latest(local_version=None, policy=None, fetch=None):
     except UpdateError as e:
         asset, err = None, str(e)
         _log("发现新版本 %s 但无法更新: %s" % (ver, err))
-    return {"status": "new", "version": ver, "tag": tag, "notes": notes, "asset": asset, "asset_error": err}
+    return {"status": "new", "version": ver, "tag": tag, "notes": notes, "asset": asset, "asset_error": err,
+            "policy": policy, "source": policy.label}
+
+
+def check_latest_multi(policies, local_version=None, fetch=None):
+    """按顺序尝试多个来源（先 GitHub，再备用源）：第一个能给出结论（已是最新/有新版）的就用它；
+    全部失败才返回错误，原因里写明每个来源各自怎么失败的。"""
+    errors = []
+    for pol in policies:
+        r = check_latest(local_version, pol, fetch)
+        if r["status"] != "error":
+            r.setdefault("policy", pol)
+            r.setdefault("source", pol.label)
+            return r
+        errors.append("%s：%s" % (pol.label, r.get("reason", "未知原因")))
+    return {"status": "error", "reason": "；".join(errors) or "没有可用的更新来源"}
 
 
 # ---------------------------------------------------------------- 每日一次 / 跳过版本
@@ -298,7 +353,8 @@ def download_file(url, dest, policy, progress=None, expected_size=None, timeout=
     try:
         with _open(url, policy, timeout, hops=hops) as r:
             final = urllib.parse.urlsplit(r.geturl())
-            if not redirect_allowed(r.geturl(), policy):
+            # 最终地址必须在跳转白名单内；备用源（带指纹的）没有跳转，最终地址就是它自己前缀下的地址
+            if not (redirect_allowed(r.geturl(), policy) or (policy.pins and url_allowed(r.geturl(), policy))):
                 raise UpdateError("最终下载地址不受信任（%s），已拒绝" % final.hostname)
             cl = r.headers.get("Content-Length")
             total = int(cl) if cl and cl.isdigit() else (expected_size or 0)
@@ -338,7 +394,7 @@ def fetch_sums_text(url, policy):
         raise UpdateError("校验文件地址不在允许的来源内，已拒绝")
     try:
         with _open(url, policy, CHECK_TIMEOUT * 2) as r:
-            if not redirect_allowed(r.geturl(), policy):
+            if not (redirect_allowed(r.geturl(), policy) or (policy.pins and url_allowed(r.geturl(), policy))):
                 raise UpdateError("校验文件最终地址不受信任，已拒绝")
             raw = r.read(MAX_SUMS_BYTES + 1)
         if len(raw) > MAX_SUMS_BYTES:
