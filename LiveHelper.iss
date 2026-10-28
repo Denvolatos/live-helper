@@ -22,6 +22,8 @@ Compression=lzma2
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
+CloseApplications=yes
+RestartApplications=no
 UninstallDisplayIcon={app}\LiveHelper.exe
 SetupIconFile=icon.ico
 
